@@ -6,8 +6,63 @@
 */
 
 #include <windows.h>
+#include <d3d11.h>
+#include <dxgi.h>
+#include <sal.h>
+
+#pragma comment(lib, "d3d11.lib")  
+#pragma comment(lib, "dxgi.lib")    
 
 const wchar_t CLASS_NAME[] = L"CubeBeatzWindowClass";
+
+ID3D11Device* device = nullptr;
+ID3D11DeviceContext* deviceContext = nullptr;
+IDXGISwapChain* swapChain = nullptr;
+ID3D11RenderTargetView* renderTargetView = nullptr;
+
+bool InitializeDirect3D(HWND hwnd) {
+    DXGI_SWAP_CHAIN_DESC scd = {};
+    scd.BufferCount = 1;
+    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.OutputWindow = hwnd; 
+    scd.SampleDesc.Count = 1;
+    scd.Windowed = TRUE;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+    HRESULT result = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE,
+        nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &scd, &swapChain, &device, nullptr, &deviceContext);
+    
+    if (FAILED(result))
+        return false;
+
+    ID3D11Texture2D* backBuffer = nullptr; 
+
+    result = swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer));
+
+    if (FAILED(result)) return false; 
+
+    result = device->CreateRenderTargetView(backBuffer, nullptr, &renderTargetView);
+
+    backBuffer->Release();
+
+    if (FAILED(result)) return false; 
+
+    deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
+
+    return true; 
+}
+
+//A Dark background color: 
+void RenderFrame() {
+    float backgroundColor[] = {
+        0.04F, 0.04f, 0.08f, 1.0f
+    };
+
+    deviceContext->ClearRenderTargetView(renderTargetView, backgroundColor);
+
+    swapChain->Present(1, 0);
+}
 
 LRESULT CALLBACK WindowProc(
     HWND hwnd,
@@ -16,18 +71,7 @@ LRESULT CALLBACK WindowProc(
     LPARAM lParam)
 {
     switch (uMsg) {
-        case WM_PAINT:
-    {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rect;
-		GetClientRect(hwnd, &rect);
-        FillRect(hdc, &rect, (HBRUSH)GetStockObject(WHITE_BRUSH));
-		EndPaint(hwnd, &ps);
-        return 0; 
-    }
-        case WM_DESTROY:
-        {
+        case WM_DESTROY:{
             PostQuitMessage(0);
             return 0;
         }
@@ -37,10 +81,10 @@ LRESULT CALLBACK WindowProc(
 }
 
 int WINAPI WinMain(
-    HINSTANCE hInstance,
-    HINSTANCE,
-    LPSTR,
-    int nCmdShow)
+    _In_ HINSTANCE hInstance,
+    _In_opt_ HINSTANCE hPrevInstance,
+    _In_ LPSTR lpCmdLine,
+    _In_ int nCmdShow)
 {
     WNDCLASS wc = {};
     wc.lpfnWndProc = WindowProc;
@@ -48,7 +92,9 @@ int WINAPI WinMain(
     wc.lpszClassName = CLASS_NAME;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 
-    RegisterClass(&wc);
+    if(!RegisterClass(&wc)) {
+        return 1;
+	}
 
     HWND hwnd = CreateWindowEx(
         0,
@@ -60,8 +106,22 @@ int WINAPI WinMain(
         1280, 720, 
         nullptr, nullptr, hInstance, nullptr);
 
-    if (hwnd == nullptr)
+    if (hwnd == nullptr) {
         return 0;
+    }
+
+    if (!InitializeDirect3D(hwnd)) {
+        MessageBox(hwnd, L"Failed to initialize Direct3D", L"CubeBeatz Error", MB_OK | MB_ICONERROR);
+		
+		if (renderTargetView) renderTargetView->Release();
+        if (swapChain) swapChain->Release();
+        if (deviceContext) deviceContext->Release();
+        if (device) device->Release();
+
+		DestroyWindow(hwnd);
+		return 1;
+
+    }
 
     ShowWindow(hwnd, nCmdShow);
 
@@ -75,9 +135,14 @@ int WINAPI WinMain(
         }
         else
         {
-            // Direct3D rendering will go here.
+			RenderFrame();
         }
     }
+
+	if (renderTargetView) renderTargetView->Release();
+	if (swapChain) swapChain->Release();
+	if (deviceContext) deviceContext->Release();
+	if (device) device->Release();
 
     return 0;
 }
