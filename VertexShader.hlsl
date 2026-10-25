@@ -2,26 +2,52 @@
 struct VertexOutput
 {
     float4 position : SV_POSITION;
-    float3 color : COLOR;
+    float3 localPosition : COLOR;
 };
 
 VertexOutput main(float4 pos : POSITION)
 {
     VertexOutput output;
 
-    // Rotate the cube around the Y axis.
-    float angle = 0.65f;
-    float cosine = cos(angle);
-    float sine = sin(angle);
+    // Rotate around the Y axis.
+    float angleY = 0.65f;
+    float cosineY = cos(angleY);
+    float sineY = sin(angleY);
 
-    float x = pos.x * cosine - pos.z * sine;
-    float z = pos.x * sine + pos.z * cosine;
+    float x = pos.x * cosineY - pos.z * sineY;
+    float z = pos.x * sineY + pos.z * cosineY;
 
-    // Apply a slight vertical and depth adjustment.
-    output.position = float4(x, pos.y, z, 1.0f);
+    // Rotate around the X axis.
+    float angleX = -0.35f;
+    float cosineX = cos(angleX);
+    float sineX = sin(angleX);
 
-    // Give the cube a blue color.
-    output.color = float3(0.15f, 0.55f, 1.0f);
+    float y = pos.y * cosineX - z * sineX;
+    z = pos.y * sineX + z * cosineX;
+
+    // Move the cube in front of the camera.
+    z += 3.0f;
+
+    // Perspective projection.
+    float nearPlane = 0.1f;
+    float farPlane = 100.0f;
+    float focalLength = 1.5f;
+
+    float projectedZ =
+        (z * farPlane / (farPlane - nearPlane))
+        - (nearPlane * farPlane / (farPlane - nearPlane));
+
+    output.position = float4(
+        x * focalLength,
+        y * focalLength,
+        projectedZ,
+        z
+    );
+
+    // Pass the original vertex position to the pixel shader.
+    output.localPosition = pos.xyz;
 
     return output;
 }
+
+
