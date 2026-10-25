@@ -11,7 +11,7 @@
 #include <d3dcompiler.h> //compiles HLSL shaders
 #include <sal.h>
 
-// Links the Firect3D and DXGI Libraries 
+// Links the Direct3D and DXGI Libraries 
 #pragma comment(lib, "d3d11.lib")  
 #pragma comment(lib, "dxgi.lib") 
 #pragma comment(lib, "d3dcompiler.lib") 
@@ -23,6 +23,65 @@ ID3D11Device* device = nullptr; //Direct3D device used to create graphic resourc
 ID3D11DeviceContext* deviceContext = nullptr; // sends rendering commands to Direct3D
 IDXGISwapChain* swapChain = nullptr; // Manages the buffers used to display frames
 ID3D11RenderTargetView* renderTargetView = nullptr; // Identifies the buffer where graphics are rendered 
+ID3DBlob* vertexShaderBlob = nullptr; // Stores the compiled vertex shader code
+ID3DBlob* pixelShaderBlob = nullptr; // Stores the compiled pixel shader code
+
+// Direct3D shader objects used by the GPU.
+ID3D11VertexShader* vertexShader = nullptr;
+ID3D11PixelShader* pixelShader = nullptr;
+
+// Stores cube vertex data on the GPU.
+ID3D11Buffer* vertexBuffer = nullptr;
+
+// Stores triangle indices on the GPU.
+ID3D11Buffer* indexBuffer = nullptr;
+
+
+//Stores the 3d position of our cube vertex
+struct Vertex {
+    float x, y, z; 
+};
+
+//The 8 corners of our cubes 
+Vertex cubeVertices[] = {
+    {-0.5f, -0.5f, -0.5f}, //back bottom left of cube
+    {-0.5f, 0.5f, -0.5f}, // back top left of cube
+    {0.5f, 0.5f, -0.5f},//back top right of cube
+    {0.5f, -0.5f, -0.5f},// back bottom right of cube
+
+    {-0.5f, -0.5f, 0.5f}, //front bottom left of cube
+    {-0.5f, 0.5f, 0.5f}, //front top left of cube
+    {0.5f, 0.5f, 0.5f}, //front top right of cube
+    {0.5f, -0.5f, 0.5f}, // front botttom right of cube 
+};
+
+//The 12 triangles that makes the cubes 6 sides
+unsigned int cubeIndices[] = {
+    //Back side
+    0,1,2, 
+    0,2,3,
+
+    //front side
+    4,6,5,
+    4,7,6,
+
+    //left side
+    4,5,1,
+    4,1,0,
+
+    //right side
+    3,2,6,
+    3,6,7,
+
+    //top side
+    1,5,6,
+    1,6,2,
+
+    //bottom side
+    4,0,3,
+    4,3,7
+
+};
 
 //Initializes Direct 3D and prepares the window for rendering 
 bool InitializeDirect3D(HWND hwnd) {
@@ -61,7 +120,7 @@ bool InitializeDirect3D(HWND hwnd) {
     // Stop if the render target could not be created.
     if (FAILED(result)) return false; 
 
-    // Sets the rendr target used by the output-merger stage
+    // Sets the render target used by the output-merger stage
     deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
     // Reports that initialization succeeded
@@ -88,6 +147,79 @@ bool CompileShader(const wchar_t* filename, const char* entryPoint, const char* 
 	return true;
 }
 
+//Creates Direct3D shader objects
+bool CreateShaders() {
+    if (device == nullptr ||
+        vertexShaderBlob == nullptr ||
+        pixelShaderBlob == nullptr) {
+        return false;
+    }
+
+    HRESULT result = device -> CreateVertexShader(vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize(), nullptr, &vertexShader);
+    if (FAILED(result)) {
+        return false;
+    }
+    result = device->CreatePixelShader(pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize(), nullptr, &pixelShader);
+    if (FAILED(result)) {
+        return false;
+    }
+	return true;
+}
+
+
+// Cleans up Direct3D resources and compiled shader bytecode.
+void Cleanup()
+{
+    // Releases the pixel shader object.
+    if (pixelShader) {
+        pixelShader->Release();
+        pixelShader = nullptr;
+    }
+
+    // Releases the vertex shader object.
+    if (vertexShader) {
+        vertexShader->Release();
+        vertexShader = nullptr;
+    }
+
+    // Releases the compiled pixel shader bytecode.
+    if (pixelShaderBlob) {
+        pixelShaderBlob->Release();
+        pixelShaderBlob = nullptr;
+    }
+
+    // Releases the compiled vertex shader bytecode.
+    if (vertexShaderBlob) {
+        vertexShaderBlob->Release();
+        vertexShaderBlob = nullptr;
+    }
+
+    // Releases the render target view.
+    if (renderTargetView) {
+        renderTargetView->Release();
+        renderTargetView = nullptr;
+    }
+
+    // Releases the swap chain.
+    if (swapChain) {
+        swapChain->Release();
+        swapChain = nullptr;
+    }
+
+    // Releases the Direct3D device context.
+    if (deviceContext) {
+        deviceContext->Release();
+        deviceContext = nullptr;
+    }
+
+    // Releases the Direct3D device.
+    if (device) {
+        device->Release();
+        device = nullptr;
+    }
+}
+
+
 //A Dark background color: 
 void RenderFrame() {
     //RGBA color dark navy 
@@ -95,9 +227,16 @@ void RenderFrame() {
         0.04F, 0.04f, 0.08f, 1.0f
     };
 
-    //renders target with background color 
+    //clears the render target with background color 
     deviceContext->ClearRenderTargetView(renderTargetView, backgroundColor);
-    //presnets the completed frame to the window
+
+    //Tells direct3d to use the vertex shader
+    deviceContext->VSSetShader(vertexShader, nullptr, 0); 
+
+    //tells direct3d to use the pixel shader
+    deviceContext->PSSetShader(pixelShader, nullptr, 0); 
+
+    //presents the completed frame to the window
     swapChain->Present(1, 0);
 }
 
@@ -129,7 +268,7 @@ int WINAPI WinMain(
     _In_ LPSTR lpCmdLine,
     _In_ int nCmdShow)
 {
-    //defiens the properties of the application window
+    //defines the properties of the application window
     WNDCLASS wc = {};
 	wc.lpfnWndProc = WindowProc; // assign the function that handles window messages
     wc.hInstance = hInstance; // stores the application instance 
@@ -157,23 +296,51 @@ int WINAPI WinMain(
         return 0;
     }
 
-    //intializes Direct3d before rendering 
+    //initializes Direct3d before rendering 
     if (!InitializeDirect3D(hwnd)) {
 
 		//displays an error message if Direct3D could not be initialized
         MessageBox(hwnd, L"Failed to initialize Direct3D", L"CubeBeatz Error", MB_OK | MB_ICONERROR);
 		
         // releases Direct3D resources
-		if (renderTargetView) renderTargetView->Release();
-        if (swapChain) swapChain->Release();
-        if (deviceContext) deviceContext->Release();
-        if (device) device->Release();
+        Cleanup();
 
-		//closes the windoe and reports failure to the operating system
+		//closes the window and reports failure to the operating system
 		DestroyWindow(hwnd);
 		return 1;
 
     }
+
+    //Compiles the vertex shader
+    if (!CompileShader(L"VertexShader.hlsl", "main", "vs_5_0", &vertexShaderBlob)) {
+        MessageBox(hwnd, L"Failed to compile vertex shader", L"CubeBeatz Error", MB_OK | MB_ICONERROR);
+        
+        Cleanup();
+        DestroyWindow(hwnd); 
+        return 1;
+    }
+
+    //Compiles the pixel shader
+    if (!CompileShader(L"PixelShader.hlsl", "main", "ps_5_0", &pixelShaderBlob)) {
+        MessageBox(hwnd, L"Failed to compile pixel shader", L"CubeBeatz Error", MB_OK | MB_ICONERROR);
+
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 1;
+    }
+
+
+    // Creates Direct3D shader objects from the compiled bytecode.
+    if (!CreateShaders()) {
+        MessageBox(hwnd, L"Failed to create Direct3D shaders",
+            L"CubeBeatz Error", MB_OK | MB_ICONERROR);
+
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 1;
+    }
+
+
     //displays the application window
     ShowWindow(hwnd, nCmdShow);
     //stores message recieved from windows
@@ -191,10 +358,8 @@ int WINAPI WinMain(
         }
     }
     //release direct3d resources before program exits 
-	if (renderTargetView) renderTargetView->Release();
-	if (swapChain) swapChain->Release();
-	if (deviceContext) deviceContext->Release();
-	if (device) device->Release();
+    Cleanup();
+
     //reports id it exits successfully 
     return 0;
 }
