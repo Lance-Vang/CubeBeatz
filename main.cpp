@@ -36,6 +36,8 @@ ID3D11Buffer* vertexBuffer = nullptr;
 // Stores triangle indices on the GPU.
 ID3D11Buffer* indexBuffer = nullptr;
 
+// Describes how Direct3D reads the cube's vertex data.
+ID3D11InputLayout* inputLayout = nullptr;
 
 //Stores the 3d position of our cube vertex
 struct Vertex {
@@ -123,8 +125,44 @@ bool InitializeDirect3D(HWND hwnd) {
     // Sets the render target used by the output-merger stage
     deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
-    // Reports that initialization succeeded
-    return true; 
+    // Defines the area of the window where Direct3D draws.
+    D3D11_VIEWPORT viewport = {};
+    viewport.TopLeftX = 0.0f;
+    viewport.TopLeftY = 0.0f;
+    viewport.Width = 1280.0f;
+    viewport.Height = 720.0f;
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+
+
+    // Applies the viewport settings.
+    deviceContext->RSSetViewports(1, &viewport);
+
+    // Creates a rasterizer state that draws both sides
+    // of every triangle, for troubleshooting.
+    D3D11_RASTERIZER_DESC rasterDesc = {};
+    rasterDesc.FillMode = D3D11_FILL_SOLID;
+    rasterDesc.CullMode = D3D11_CULL_NONE;
+    rasterDesc.DepthClipEnable = TRUE;
+
+    ID3D11RasterizerState* rasterState = nullptr;
+
+    HRESULT rasterResult =
+        device->CreateRasterizerState(&rasterDesc, &rasterState);
+
+    if (FAILED(rasterResult)) {
+        return false;
+    }
+
+    // Applies the rasterizer state to the graphics pipeline.
+    deviceContext->RSSetState(rasterState);
+
+    // Releases our local reference; Direct3D retains its own.
+    rasterState->Release();
+
+    // Reports that initialization succeeded.
+    return true;
+
 }
 
 bool CompileShader(const wchar_t* filename, const char* entryPoint, const char* shaderModel, ID3DBlob** shaderblob) {
@@ -166,7 +204,7 @@ bool CreateShaders() {
 	return true;
 }
 
-//Creating cubebuffers 
+//Creating the cubebuffers 
 bool CreateCubebuffers() {
 
     //the vertex buffer
@@ -228,10 +266,52 @@ bool CreateCubebuffers() {
     return true;
 }
 
+//Creates the input layout 
+bool CreateInputLayout() {
+
+    //format of each of the cube vertex
+    D3D11_INPUT_ELEMENT_DESC layoutDesc = {};
+    layoutDesc.SemanticName = "POSITION";
+    layoutDesc.SemanticIndex = 0;
+    layoutDesc.Format = DXGI_FORMAT_R32G32B32_FLOAT; 
+    layoutDesc.InputSlot = 0;
+    layoutDesc.AlignedByteOffset = 0;
+    layoutDesc.InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
+    layoutDesc.InstanceDataStepRate = 0;
+
+    //input layouy using the compiled vertex shader 
+    HRESULT result = device->CreateInputLayout(&layoutDesc, 1, 
+        vertexShaderBlob->GetBufferPointer(), 
+        vertexShaderBlob->GetBufferSize(), &inputLayout);
+    if (FAILED(result)) {
+        MessageBox(nullptr, L"Failed to create the cube input layout.",
+            L"Direct3D Error", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    return true;
+}
+
 
 // Cleans up Direct3D resources and compiled shader bytecode.
 void Cleanup()
 {
+    //releases the cube's buffers 
+    if (indexBuffer) {
+        indexBuffer->Release();
+        indexBuffer = nullptr;
+    }
+    if (vertexBuffer) {
+        vertexBuffer->Release(); 
+        vertexBuffer = nullptr;
+    }
+
+    // Releases the input layout.
+    if (inputLayout) {
+        inputLayout->Release();
+        inputLayout = nullptr;
+    }
+
     // Releases the pixel shader object.
     if (pixelShader) {
         pixelShader->Release();
@@ -292,11 +372,27 @@ void RenderFrame() {
     //clears the render target with background color 
     deviceContext->ClearRenderTargetView(renderTargetView, backgroundColor);
 
-    //Tells direct3d to use the vertex shader
+    //direct3d uses the vertex shader
     deviceContext->VSSetShader(vertexShader, nullptr, 0); 
 
-    //tells direct3d to use the pixel shader
-    deviceContext->PSSetShader(pixelShader, nullptr, 0); 
+    //direct3d uses the pixel shader
+    deviceContext->PSSetShader(pixelShader, nullptr, 0);
+
+    //Interprets the cube vertex
+    deviceContext->IASetInputLayout(inputLayout);
+
+    //Defines the size of one vertex
+    UINT vertexStride = sizeof(Vertex);
+
+    UINT vertexOffset = 0; 
+
+    deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+
+    deviceContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+
+    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    deviceContext->DrawIndexed(36, 0, 0);
 
     //presents the completed frame to the window
     swapChain->Present(1, 0);
@@ -401,6 +497,28 @@ int WINAPI WinMain(
         DestroyWindow(hwnd);
         return 1;
     }
+
+
+    // Creates the cube's vertex and index buffers.
+    if (!CreateCubebuffers()) {
+        MessageBox(hwnd, L"Failed to create cube buffers",
+            L"CubeBeatz Error", MB_OK | MB_ICONERROR);
+
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 1;
+    }
+
+    // Creates the input layout for cube vertices.
+    if (!CreateInputLayout()) {
+        MessageBox(hwnd, L"Failed to create input layout",
+            L"CubeBeatz Error", MB_OK | MB_ICONERROR);
+
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 1;
+    }
+
 
 
     //displays the application window
