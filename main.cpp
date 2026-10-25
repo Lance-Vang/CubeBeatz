@@ -166,6 +166,68 @@ bool CreateShaders() {
 	return true;
 }
 
+//Creating cubebuffers 
+bool CreateCubebuffers() {
+
+    //the vertex buffer
+    D3D11_BUFFER_DESC vertexBufferDesc = {};
+    vertexBufferDesc.ByteWidth = sizeof(cubeVertices);
+    vertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+    // Tell Direct3D where the cube's vertex data is stored.
+    D3D11_SUBRESOURCE_DATA vertexData = {};
+    vertexData.pSysMem = cubeVertices;
+
+    // Create the vertex buffer on the GPU.
+    HRESULT result = device->CreateBuffer(
+        &vertexBufferDesc,
+        &vertexData,
+        &vertexBuffer
+    );
+
+    if (FAILED(result))
+    {
+        MessageBox(
+            nullptr,
+            L"Failed to create the cube vertex buffer.",
+            L"Direct3D Error",
+            MB_OK | MB_ICONERROR
+        );
+        return false;
+    }
+
+    // Describe the index buffer.
+    D3D11_BUFFER_DESC indexBufferDesc = {};
+    indexBufferDesc.ByteWidth = sizeof(cubeIndices);
+    indexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    indexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+
+    // Tell Direct3D where the cube's index data is stored.
+    D3D11_SUBRESOURCE_DATA indexData = {};
+    indexData.pSysMem = cubeIndices;
+
+    // Create the index buffer on the GPU.
+    result = device->CreateBuffer(
+        &indexBufferDesc,
+        &indexData,
+        &indexBuffer
+    );
+
+    if (FAILED(result))
+    {
+        MessageBox(
+            nullptr,
+            L"Failed to create the cube index buffer.",
+            L"Direct3D Error",
+            MB_OK | MB_ICONERROR
+        );
+        return false;
+    }
+
+    return true;
+}
+
 
 // Cleans up Direct3D resources and compiled shader bytecode.
 void Cleanup()
