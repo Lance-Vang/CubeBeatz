@@ -8,11 +8,13 @@
 #include <windows.h> //Windows function and Windows management
 #include <d3d11.h> // Direct3D 11 graphics functionality
 #include <dxgi.h> // graphics display and swap-chain functions
+#include <d3dcompiler.h> //compiles HLSL shaders
 #include <sal.h>
 
 // Links the Firect3D and DXGI Libraries 
 #pragma comment(lib, "d3d11.lib")  
-#pragma comment(lib, "dxgi.lib")    
+#pragma comment(lib, "dxgi.lib") 
+#pragma comment(lib, "d3dcompiler.lib") 
 
 // Identifies the application window
 const wchar_t CLASS_NAME[] = L"CubeBeatzWindowClass"; 
@@ -64,6 +66,26 @@ bool InitializeDirect3D(HWND hwnd) {
 
     // Reports that initialization succeeded
     return true; 
+}
+
+bool CompileShader(const wchar_t* filename, const char* entryPoint, const char* shaderModel, ID3DBlob** shaderblob) {
+	ID3DBlob* errorBlob = nullptr;
+
+    HRESULT result = D3DCompileFromFile(filename, nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, entryPoint, shaderModel,D3DCOMPILE_ENABLE_STRICTNESS, 0, shaderblob, &errorBlob);
+
+    if (FAILED(result)) {
+        if (errorBlob != nullptr) {
+            MessageBoxA(nullptr,(const char*)errorBlob->GetBufferPointer(),
+                "Shader Compilation Error",MB_OK | MB_ICONERROR);
+            errorBlob->Release();
+        }
+        return false;
+	}
+
+    if (errorBlob != nullptr) {
+        errorBlob->Release();
+    }
+	return true;
 }
 
 //A Dark background color: 
