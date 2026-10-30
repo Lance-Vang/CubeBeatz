@@ -61,6 +61,19 @@ bool noteMissed = false;
 
 // Counts successful hits.
 int hitCount = 0;
+
+// Stores the player's total score.
+int score = 0;
+
+// Tracks consecutive successful hits.
+int combo = 0;
+
+// Tracks the highest combo achieved.
+int maxCombo = 0;
+
+// Counts missed notes.
+int missCount = 0;
+
 // Stores cube vertex data on the GPU.
 ID3D11Buffer* vertexBuffer = nullptr;
 
@@ -591,7 +604,7 @@ void Cleanup()
 
 //A Dark background color: 
 
-void RenderFrame()
+void RenderFrame(HWND hwnd)
 {
     // Dark navy background color.
     float backgroundColor[] = {
@@ -642,10 +655,22 @@ void RenderFrame()
     // Move the cube toward the player.
     cubePositionZ -= deltaTime * 1.5f;
 
-    // Check whether the cube passed the hit window.
-    if (cubePositionZ < -0.05f && !noteHit)
+    // Check whether the cube passed the hit window without being hit.
+    if (cubePositionZ < -0.05f && !noteHit && !noteMissed)
     {
         noteMissed = true;
+
+        // Record the miss and reset the combo.
+        missCount++;
+        combo = 0;
+
+        // Update the window title with the current statistics.
+        wchar_t title[150];
+        wsprintf(title,
+            L"CubeBeatz - Score: %d | Combo: %d | Misses: %d",
+            score, combo, missCount);
+
+        SetWindowText(hwnd, title);
     }
 
     // Reset the cube after it has been hit or missed.
@@ -735,22 +760,49 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         else if (wParam == 'L')
             pressedLane = 5;
 
-        // Check whether the key matches the cube's lane
-        // and whether the cube is near the yellow hit line.
+        // Check whether the correct lane key was pressed
+        // while the cube is inside the hit window.
         if (pressedLane == selectedLane &&
             cubePositionZ >= -0.05f &&
             cubePositionZ <= 0.35f &&
             !noteHit && !noteMissed)
         {
             noteHit = true;
-            hitCount++;
 
-            // Display the successful hit count.
-            wchar_t title[100];
-            wsprintf(title, L"CubeBeatz - Hits: %d", hitCount);
+            // Store the timing judgment.
+            const wchar_t* judgment;
+
+            // Perfect: very close to the yellow hit line.
+            if (cubePositionZ >= 0.07f && cubePositionZ <= 0.23f)
+            {
+                judgment = L"PERFECT!";
+                score += 500;
+            }
+            // Good: inside the wider hit window.
+            else
+            {
+                judgment = L"GOOD!";
+                score += 300;
+            }
+
+            // Increase the successful hit count and combo.
+            hitCount++;
+            combo++;
+
+            // Update the highest combo if necessary.
+            if (combo > maxCombo)
+            {
+                maxCombo = combo;
+            }
+
+            // Display the judgment and current statistics.
+            wchar_t title[150];
+            wsprintf(title,
+                L"CubeBeatz - %s | Score: %d | Combo: %d",
+                judgment, score, combo);
+
             SetWindowText(hwnd, title);
         }
-
         return 0;
     }
 
@@ -900,7 +952,7 @@ int WINAPI WinMain(
         }
         else
         {
-			RenderFrame();
+			RenderFrame(hwnd);
         }
     }
     //release direct3d resources before program exits 
