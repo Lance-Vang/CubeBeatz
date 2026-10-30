@@ -30,11 +30,37 @@ ID3DBlob* pixelShaderBlob = nullptr; // Stores the compiled pixel shader code
 ID3D11VertexShader* vertexShader = nullptr;
 ID3D11PixelShader* pixelShader = nullptr;
 
+//helps with telling how to rotate the cube and where to place the cube
+struct ObjectSettings
+{
+    int rotateObject;
+    float cubePositionZ;
+    float cubePositionX;
+    float padding;
+};
+
+// Sends object settings to the GPU.
+ID3D11Buffer* objectSettingsBuffer = nullptr;
+
+// Controls how far the cube has traveled down the track.
+float cubePositionZ = 0.0f;
+
+// Stores which lane the player is currently selecting.
+// Lane 0 = D, Lane 1 = F, Lane 2 = J, Lane 3 = K.
+int selectedLane = 0;
+
+// Stores the horizontal position of the cube.
+float cubePositionX = -1.5f;
+
 // Stores cube vertex data on the GPU.
 ID3D11Buffer* vertexBuffer = nullptr;
 
 // Stores triangle indices on the GPU.
 ID3D11Buffer* indexBuffer = nullptr;
+
+// Buffers used to store the four-lane track geometry.
+ID3D11Buffer* trackVertexBuffer = nullptr;
+ID3D11Buffer* trackIndexBuffer = nullptr;
 
 // Describes how Direct3D reads the cube's vertex data.
 ID3D11InputLayout* inputLayout = nullptr;
@@ -45,6 +71,25 @@ ID3D11DepthStencilView* depthStencilView = nullptr;
 //Stores the 3d position of our cube vertex
 struct Vertex {
     float x, y, z; 
+};
+
+//Four lane track vertices 
+Vertex trackVertices[] = {
+
+    //Near end 
+    {-2.0f, -0.6f, -0.2f},
+    {2.0f, -0.6f, -0.2f},
+
+    //far end
+    {-2.0f, -0.6f, 8.0f},
+    {2.0f,-0.6f, 8.0f}
+
+
+};
+
+unsigned int trackIndices[] = {
+    0,2,1,
+    1,2,3
 };
 
 //The 8 corners of our cubes 
@@ -262,7 +307,7 @@ bool CreateShaders() {
 }
 
 //Creating the cubebuffers 
-bool CreateCubebuffers() {
+bool CreateCubeBuffers() {
 
     //the vertex buffer
     D3D11_BUFFER_DESC vertexBufferDesc = {};
@@ -323,6 +368,103 @@ bool CreateCubebuffers() {
     return true;
 }
 
+//creates the four lane track buffers
+bool CreateTrackBuffers() {
+    // Describe the track's vertex buffer.
+    D3D11_BUFFER_DESC vertexBufferDesc = {};
+    vertexBufferDesc.ByteWidth = sizeof(trackVertices);
+    vertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+    // Provide the track vertex data to Direct3D.
+    D3D11_SUBRESOURCE_DATA vertexData = {};
+    vertexData.pSysMem = trackVertices;
+
+    // Create the track vertex buffer.
+    HRESULT result = device->CreateBuffer(
+        &vertexBufferDesc,
+        &vertexData,
+        &trackVertexBuffer
+    );
+
+    if (FAILED(result))
+    {
+        MessageBox(
+            nullptr,
+            L"Failed to create the track vertex buffer.",
+            L"Direct3D Error",
+            MB_OK | MB_ICONERROR
+        );
+        return false;
+    }
+
+    // Describe the track's index buffer.
+    D3D11_BUFFER_DESC indexBufferDesc = {};
+    indexBufferDesc.ByteWidth = sizeof(trackIndices);
+    indexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    indexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+
+    // Provide the track index data to Direct3D.
+    D3D11_SUBRESOURCE_DATA indexData = {};
+    indexData.pSysMem = trackIndices;
+
+    // Create the track index buffer.
+    result = device->CreateBuffer(
+        &indexBufferDesc,
+        &indexData,
+        &trackIndexBuffer
+    );
+
+    if (FAILED(result))
+    {
+        MessageBox(
+            nullptr,
+            L"Failed to create the track index buffer.",
+            L"Direct3D Error",
+            MB_OK | MB_ICONERROR
+        );
+        return false;
+    }
+
+    return true;
+}
+
+//
+bool CreateObjectSettingsBuffer()
+{
+    D3D11_BUFFER_DESC bufferDesc = {};
+    bufferDesc.ByteWidth = sizeof(ObjectSettings);
+    bufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+
+    ObjectSettings settings = {};
+    settings.rotateObject = 1;
+
+    D3D11_SUBRESOURCE_DATA initialData = {};
+    initialData.pSysMem = &settings;
+
+    HRESULT result = device->CreateBuffer(
+        &bufferDesc,
+        &initialData,
+        &objectSettingsBuffer
+    );
+
+    if (FAILED(result))
+    {
+        MessageBox(
+            nullptr,
+            L"Failed to create object settings buffer.",
+            L"Direct3D Error",
+            MB_OK | MB_ICONERROR
+        );
+        return false;
+    }
+
+    return true;
+}
+
+
+
 //Creates the input layout 
 bool CreateInputLayout() {
 
@@ -353,6 +495,13 @@ bool CreateInputLayout() {
 // Cleans up Direct3D resources and compiled shader bytecode.
 void Cleanup()
 {
+    // Release the object settings constant buffer.
+    if (objectSettingsBuffer)
+    {
+        objectSettingsBuffer->Release();
+        objectSettingsBuffer = nullptr;
+    }
+
     //releases the cube's buffers 
     if (indexBuffer) {
         indexBuffer->Release();
@@ -361,6 +510,18 @@ void Cleanup()
     if (vertexBuffer) {
         vertexBuffer->Release(); 
         vertexBuffer = nullptr;
+    }
+
+    // Release the track's index buffer.
+    if (trackIndexBuffer) {
+        trackIndexBuffer->Release();
+        trackIndexBuffer = nullptr;
+    }
+
+    // Release the track's vertex buffer.
+    if (trackVertexBuffer) {
+        trackVertexBuffer->Release();
+        trackVertexBuffer = nullptr;
     }
 
     // Releases the input layout.
@@ -425,44 +586,105 @@ void Cleanup()
 
 
 //A Dark background color: 
-void RenderFrame() {
-    //RGBA color dark navy 
+
+void RenderFrame()
+{
+    // Dark navy background color.
     float backgroundColor[] = {
-        0.04F, 0.04f, 0.08f, 1.0f
+        0.04f, 0.04f, 0.08f, 1.0f
     };
 
-    //clears the render target with background color 
-    deviceContext->ClearRenderTargetView(renderTargetView, backgroundColor);
+    // Clear the screen before drawing the next frame.
+    deviceContext->ClearRenderTargetView(
+        renderTargetView, backgroundColor);
 
-    //clears the depth setencil view 
-    deviceContext->ClearDepthStencilView(depthStencilView,
-        D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f,0);
+    // Clear the depth buffer.
+    deviceContext->ClearDepthStencilView(
+        depthStencilView,
+        D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
+        1.0f,
+        0
+    );
 
-    //direct3d uses the vertex shader
-    deviceContext->VSSetShader(vertexShader, nullptr, 0); 
-
-    //direct3d uses the pixel shader
+    // Set the shaders used for rendering.
+    deviceContext->VSSetShader(vertexShader, nullptr, 0);
     deviceContext->PSSetShader(pixelShader, nullptr, 0);
 
-    //Interprets the cube vertex
+    // Tell Direct3D how to read the vertex data.
     deviceContext->IASetInputLayout(inputLayout);
 
-    //Defines the size of one vertex
+    // Draw triangles using the index buffers.
+    deviceContext->IASetPrimitiveTopology(
+        D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // Define the size and starting position of each vertex.
     UINT vertexStride = sizeof(Vertex);
+    UINT vertexOffset = 0;
 
-    UINT vertexOffset = 0; 
+    // Bind the object settings buffer to both shaders.
+    deviceContext->VSSetConstantBuffers(
+        0, 1, &objectSettingsBuffer);
 
-    deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+    deviceContext->PSSetConstantBuffers(
+        0, 1, &objectSettingsBuffer);
 
-    deviceContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+    // Drawing the cube and making it move.
+    static ULONGLONG previousTime = GetTickCount64();
 
-    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ULONGLONG currentTime = GetTickCount64();
+    float deltaTime = (currentTime - previousTime) / 1000.0f;
+    previousTime = currentTime;
 
+    // Move the cube toward the player.
+    cubePositionZ -= deltaTime * 1.5f;
+
+    // Reset the cube when it reaches the front.
+    if (cubePositionZ < -1.5f)
+    {
+        cubePositionZ = 5.0f;
+    }
+
+    ObjectSettings settings = {};
+    settings.rotateObject = 1;
+    settings.cubePositionZ = cubePositionZ;
+    settings.cubePositionX = cubePositionX;
+
+    /// Send the cube's rotation and movement settings to the shaders.
+    deviceContext->UpdateSubresource(
+        objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
+
+    // Set the cube vertex and index buffers.
+    deviceContext->IASetVertexBuffers(
+        0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+
+    deviceContext->IASetIndexBuffer(
+        indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+
+    // Draw all 12 triangles of the cube.
     deviceContext->DrawIndexed(36, 0, 0);
 
-    //presents the completed frame to the window
+    // drawing the track
+    settings.rotateObject = 0;
+    settings.cubePositionZ = 0.0f;
+
+    // Tell the shaders not to apply the cube's Y rotation.
+    deviceContext->UpdateSubresource(
+        objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
+
+    // Set the track vertex and index buffers.
+    deviceContext->IASetVertexBuffers(
+        0, 1, &trackVertexBuffer, &vertexStride, &vertexOffset);
+
+    deviceContext->IASetIndexBuffer(
+        trackIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
+
+    // Draw the two triangles that form the track.
+    deviceContext->DrawIndexed(6, 0, 0);
+
+    // Display the completed frame.
     swapChain->Present(1, 0);
 }
+
 
 //Handles Windows messages sent to the application window
 LRESULT CALLBACK WindowProc(
@@ -566,7 +788,7 @@ int WINAPI WinMain(
 
 
     // Creates the cube's vertex and index buffers.
-    if (!CreateCubebuffers()) {
+    if (!CreateCubeBuffers()) {
         MessageBox(hwnd, L"Failed to create cube buffers",
             L"CubeBeatz Error", MB_OK | MB_ICONERROR);
 
@@ -574,6 +796,29 @@ int WINAPI WinMain(
         DestroyWindow(hwnd);
         return 1;
     }
+
+
+    // Creates the track's vertex and index buffers.
+    if (!CreateTrackBuffers()) {
+        MessageBox(hwnd, L"Failed to create track buffers",
+            L"CubeBeatz Error", MB_OK | MB_ICONERROR);
+
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 1;
+    }
+
+    // Creates the constant buffer used to send object settings to the GPU.
+    if (!CreateObjectSettingsBuffer())
+    {
+        MessageBox(hwnd, L"Failed to create object settings buffer",
+            L"CubeBeatz Error", MB_OK | MB_ICONERROR);
+
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 1;
+    }
+
 
     // Creates the input layout for cube vertices.
     if (!CreateInputLayout()) {

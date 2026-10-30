@@ -1,3 +1,11 @@
+//Constant buffer
+cbuffer ObjectSettings : register(b0)
+{
+    int rotateObject;
+    float cubePositionZ;
+    float cubePositionX;
+    float padding;
+};
 
 struct VertexOutput
 {
@@ -9,23 +17,48 @@ VertexOutput main(float4 pos : POSITION)
 {
     VertexOutput output;
 
-    // Rotate around the Y axis.
-    float angleY = 0.65f;
-    float cosineY = cos(angleY);
-    float sineY = sin(angleY);
+    float x = pos.x;
+    float y = pos.y;
+    float z = pos.z;
+    
+    // Move the cube horizontally into the selected lane
+    if (rotateObject == 1)
+    {
+        x += cubePositionX;
+    }
 
-    float x = pos.x * cosineY - pos.z * sineY;
-    float z = pos.x * sineY + pos.z * cosineY;
+    // Rotate the cube around the Y axis.
+    // The track skips this rotation.
+    if (rotateObject == 1)
+    {
+        float angleY = 0.65f;
 
-    // Rotate around the X axis.
+        float cosineY = cos(angleY);
+        float sineY = sin(angleY);
+
+        float rotatedX = x * cosineY - z * sineY;
+        float rotatedZ = x * sineY + z * cosineY;
+
+        x = rotatedX;
+        z = rotatedZ;
+
+        // Move the cube along the track.
+        z += cubePositionZ;
+    }
+
+    // Apply the shared camera angle.
     float angleX = -0.35f;
+
     float cosineX = cos(angleX);
     float sineX = sin(angleX);
 
-    float y = pos.y * cosineX - z * sineX;
-    z = pos.y * sineX + z * cosineX;
+    float rotatedY = y * cosineX - z * sineX;
+    float rotatedZ = y * sineX + z * cosineX;
 
-    // Move the cube in front of the camera.
+    y = rotatedY;
+    z = rotatedZ;
+
+    // Move the objects in front of the camera.
     z += 3.0f;
 
     // Perspective projection.
@@ -44,7 +77,6 @@ VertexOutput main(float4 pos : POSITION)
         z
     );
 
-    // Pass the original vertex position to the pixel shader.
     output.localPosition = pos.xyz;
 
     return output;
