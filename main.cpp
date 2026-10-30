@@ -43,15 +43,24 @@ struct ObjectSettings
 ID3D11Buffer* objectSettingsBuffer = nullptr;
 
 // Controls how far the cube has traveled down the track.
-float cubePositionZ = 0.0f;
+float cubePositionZ = 5.0f;
 
-// Stores which lane the player is currently selecting.
-// Lane 0 = D, Lane 1 = F, Lane 2 = J, Lane 3 = K.
+// Stores which of the six lanes the player is selecting.
+// Lane 0 = S, Lane 1 = D, Lane 2 = F,
+// Lane 3 = J, Lane 4 = K, Lane 5 = L.
 int selectedLane = 0;
 
 // Stores the horizontal position of the cube.
 float cubePositionX = -1.5f;
 
+// Tracks whether the current cube has been hit.
+bool noteHit = false;
+
+// Tracks whether the current cube has been missed.
+bool noteMissed = false;
+
+// Counts successful hits.
+int hitCount = 0;
 // Stores cube vertex data on the GPU.
 ID3D11Buffer* vertexBuffer = nullptr;
 
@@ -74,17 +83,12 @@ struct Vertex {
 };
 
 //Four lane track vertices 
-Vertex trackVertices[] = {
-
-    //Near end 
-    {-2.0f, -0.6f, -0.2f},
-    {2.0f, -0.6f, -0.2f},
-
-    //far end
-    {-2.0f, -0.6f, 8.0f},
-    {2.0f,-0.6f, 8.0f}
-
-
+Vertex trackVertices[] =
+{
+    {-1.8f, -0.6f, -0.2f},
+    { 1.8f, -0.6f, -0.2f},
+    {-1.8f, -0.6f,  8.0f},
+    { 1.8f, -0.6f,  8.0f}
 };
 
 unsigned int trackIndices[] = {
@@ -638,10 +642,30 @@ void RenderFrame()
     // Move the cube toward the player.
     cubePositionZ -= deltaTime * 1.5f;
 
-    // Reset the cube when it reaches the front.
-    if (cubePositionZ < -1.5f)
+    // Check whether the cube passed the hit window.
+    if (cubePositionZ < -0.05f && !noteHit)
     {
-        cubePositionZ = 5.0f;
+        noteMissed = true;
+    }
+
+    // Reset the cube after it has been hit or missed.
+    if (noteHit || noteMissed)
+    {
+        // Wait until the cube passes the front of the track.
+        if (cubePositionZ < -1.5f)
+        {
+            cubePositionZ = 5.0f;
+
+            // Prepare the next cube.
+            noteHit = false;
+            noteMissed = false;
+
+            // Move the next cube to the following lane.
+            selectedLane = (selectedLane + 1) % 6;
+
+            // Update the cube's horizontal position.
+            cubePositionX = -1.5f + (selectedLane * 0.6f);
+        }
     }
 
     ObjectSettings settings = {};
@@ -666,6 +690,7 @@ void RenderFrame()
     // drawing the track
     settings.rotateObject = 0;
     settings.cubePositionZ = 0.0f;
+    settings.cubePositionX = 0.0f;
 
     // Tell the shaders not to apply the cube's Y rotation.
     deviceContext->UpdateSubresource(
@@ -686,24 +711,54 @@ void RenderFrame()
 }
 
 
-//Handles Windows messages sent to the application window
-LRESULT CALLBACK WindowProc(
-    HWND hwnd,
-    UINT uMsg,
-    WPARAM wParam,
-    LPARAM lParam)
+// Handles Windows messages sent to the application window.
+
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    //checks which type of windows message was received
-    switch (uMsg) {
-        // handles the window being destroyed
-        case WM_DESTROY:{
-            //tells the application's message loop to stop
-            PostQuitMessage(0);
-            return 0;
+    switch (uMsg)
+    {
+    case WM_KEYDOWN:
+    {
+        int pressedLane = -1;
+
+        // Identify which lane key was pressed.
+        if (wParam == 'S')
+            pressedLane = 0;
+        else if (wParam == 'D')
+            pressedLane = 1;
+        else if (wParam == 'F')
+            pressedLane = 2;
+        else if (wParam == 'J')
+            pressedLane = 3;
+        else if (wParam == 'K')
+            pressedLane = 4;
+        else if (wParam == 'L')
+            pressedLane = 5;
+
+        // Check whether the key matches the cube's lane
+        // and whether the cube is near the yellow hit line.
+        if (pressedLane == selectedLane &&
+            cubePositionZ >= -0.05f &&
+            cubePositionZ <= 0.35f &&
+            !noteHit && !noteMissed)
+        {
+            noteHit = true;
+            hitCount++;
+
+            // Display the successful hit count.
+            wchar_t title[100];
+            wsprintf(title, L"CubeBeatz - Hits: %d", hitCount);
+            SetWindowText(hwnd, title);
         }
+
+        return 0;
     }
 
-    //let windows handle message not handled above 
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 

@@ -20,12 +20,6 @@ VertexOutput main(float4 pos : POSITION)
     float x = pos.x;
     float y = pos.y;
     float z = pos.z;
-    
-    // Move the cube horizontally into the selected lane
-    if (rotateObject == 1)
-    {
-        x += cubePositionX;
-    }
 
     // Rotate the cube around the Y axis.
     // The track skips this rotation.
@@ -44,6 +38,12 @@ VertexOutput main(float4 pos : POSITION)
 
         // Move the cube along the track.
         z += cubePositionZ;
+    }
+
+       // Move the cube horizontally into the selected lane
+    if (rotateObject == 1)
+    {
+        x += cubePositionX;
     }
 
     // Apply the shared camera angle.
