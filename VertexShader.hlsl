@@ -1,4 +1,4 @@
-//Constant buffer
+
 cbuffer ObjectSettings : register(b0)
 {
     int rotateObject;
@@ -17,14 +17,26 @@ VertexOutput main(float4 pos : POSITION)
 {
     VertexOutput output;
 
+    // Get the original vertex coordinates.
     float x = pos.x;
     float y = pos.y;
     float z = pos.z;
 
-    // Rotate the cube around the Y axis.
-    // The track skips this rotation.
+    // Apply cube transformations only to the cube.
     if (rotateObject == 1)
     {
+        // Enlarge the cube slightly during the outline pass.
+        if (padding == 1.0f)
+        {
+            x *= 1.12f;
+            y *= 1.12f;
+            z *= 1.12f;
+        }
+
+        // Lower the cube so it sits on the track.
+        y -= 0.4f;
+
+        // Rotate the cube around its own center.
         float angleY = 0.65f;
 
         float cosineY = cos(angleY);
@@ -36,14 +48,11 @@ VertexOutput main(float4 pos : POSITION)
         x = rotatedX;
         z = rotatedZ;
 
+        // Move the cube into its selected lane.
+        x += cubePositionX;
+
         // Move the cube along the track.
         z += cubePositionZ;
-    }
-
-       // Move the cube horizontally into the selected lane
-    if (rotateObject == 1)
-    {
-        x += cubePositionX;
     }
 
     // Apply the shared camera angle.
@@ -77,9 +86,8 @@ VertexOutput main(float4 pos : POSITION)
         z
     );
 
+    // Preserve the original local vertex position.
     output.localPosition = pos.xyz;
 
     return output;
 }
-
-

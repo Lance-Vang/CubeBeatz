@@ -10,6 +10,7 @@
 #include <dxgi.h> // graphics display and swap-chain functions
 #include <d3dcompiler.h> //compiles HLSL shaders
 #include <sal.h>
+#include "AudioManager.h"
 
 // Links the Direct3D and DXGI Libraries 
 #pragma comment(lib, "d3d11.lib")  
@@ -45,10 +46,38 @@ ID3D11Buffer* objectSettingsBuffer = nullptr;
 // Controls how far the cube has traveled down the track.
 float cubePositionZ = 5.0f;
 
+// Stores the music playback time when the current note begins moving.
+double noteStartTime = 0.0;
+
 // Stores which of the six lanes the player is selecting.
 // Lane 0 = S, Lane 1 = D, Lane 2 = F,
 // Lane 3 = J, Lane 4 = K, Lane 5 = L.
 int selectedLane = 0;
+
+// Stores the information for an individual rhythm note.
+struct Note
+{
+    double hitTime; // Time in the song when the note should be hit.
+    int lane;       // Lane where the note will appear.
+};
+
+// Stores the scheduled notes for the song.
+// Lane 0 = S, Lane 1 = D, Lane 2 = F,
+// Lane 3 = J, Lane 4 = K, Lane 5 = L.
+Note noteChart[] =
+{
+    {4.0, 0}, // 4 seconds: S
+    {4.5, 2}, // 4.5 seconds: F
+    {5.0, 3}, // 5 seconds: J
+    {5.5, 1}, // 5.5 seconds: D
+    {6.0, 5}  // 6 seconds: L
+};
+
+// Tracks which note in the chart should be played next.
+int currentNoteIndex = 0;
+
+// Calculates how many notes are in the chart.
+const int totalNotes = sizeof(noteChart) / sizeof(noteChart[0]);
 
 // Stores the horizontal position of the cube.
 float cubePositionX = -1.5f;
@@ -65,11 +94,14 @@ int hitCount = 0;
 // Stores the player's total score.
 int score = 0;
 
-// Tracks consecutive successful hits.
+// Tracks consecutive successful hits. Global Variables
 int combo = 0;
 
-// Tracks the highest combo achieved.
+// Tracks the highest combo achieved. Global Variables 
 int maxCombo = 0;
+
+// Stores the current score multiplier.
+int multiplier = 1;
 
 // Counts missed notes.
 int missCount = 0;
@@ -90,6 +122,12 @@ ID3D11InputLayout* inputLayout = nullptr;
 //depth stencil
 ID3D11DepthStencilView* depthStencilView = nullptr;
 
+// Rasterizer state used for normal solid cube and track rendering.
+ID3D11RasterizerState* solidRasterState = nullptr;
+
+// Rasterizer state used to draw the colored cube outline.
+ID3D11RasterizerState* outlineRasterState = nullptr;
+
 //Stores the 3d position of our cube vertex
 struct Vertex {
     float x, y, z; 
@@ -109,17 +147,17 @@ unsigned int trackIndices[] = {
     1,2,3
 };
 
-//The 8 corners of our cubes 
+// The 8 corners of our smaller rhythm notes.
 Vertex cubeVertices[] = {
-    {-0.5f, -0.5f, -0.5f}, //back bottom left of cube
-    {-0.5f, 0.5f, -0.5f}, // back top left of cube
-    {0.5f, 0.5f, -0.5f},//back top right of cube
-    {0.5f, -0.5f, -0.5f},// back bottom right of cube
+    {-0.15f, -0.20f, -0.15f},
+    {-0.15f,  0.20f, -0.15f},
+    { 0.15f,  0.20f, -0.15f},
+    { 0.15f, -0.20f, -0.15f},
 
-    {-0.5f, -0.5f, 0.5f}, //front bottom left of cube
-    {-0.5f, 0.5f, 0.5f}, //front top left of cube
-    {0.5f, 0.5f, 0.5f}, //front top right of cube
-    {0.5f, -0.5f, 0.5f}, // front botttom right of cube 
+    {-0.15f, -0.20f,  0.15f},
+    {-0.15f,  0.20f,  0.15f},
+    { 0.15f,  0.20f,  0.15f},
+    { 0.15f, -0.20f,  0.15f},
 };
 
 //The 12 triangles that makes the cubes 6 sides
@@ -269,15 +307,32 @@ bool InitializeDirect3D(HWND hwnd) {
     HRESULT rasterResult =
         device->CreateRasterizerState(&rasterDesc, &rasterState);
 
+    // Create a second rasterizer state for drawing cube outlines.
+    D3D11_RASTERIZER_DESC outlineDesc = {};
+    outlineDesc.FillMode = D3D11_FILL_WIREFRAME;
+    outlineDesc.CullMode = D3D11_CULL_NONE;
+    outlineDesc.DepthClipEnable = TRUE;
+
+    // Create the wireframe rasterizer state.
+    HRESULT outlineResult = device->CreateRasterizerState(
+        &outlineDesc,
+        &outlineRasterState
+    );
+
+    if (FAILED(outlineResult))
+    {
+        return false;
+    }
+
     if (FAILED(rasterResult)) {
         return false;
     }
 
-    // Applies the rasterizer state to the graphics pipeline.
-    deviceContext->RSSetState(rasterState);
+    // Store the solid rasterizer state for later use.
+    solidRasterState = rasterState;
 
-    // Releases our local reference; Direct3D retains its own.
-    rasterState->Release();
+    // Apply the solid rasterizer state.
+    deviceContext->RSSetState(solidRasterState);
 
     // Reports that initialization succeeded.
     return true;
@@ -582,6 +637,19 @@ void Cleanup()
         depthStencilView = nullptr;
     }
 
+    // Release the solid rasterizer state.
+    if (solidRasterState)
+    {
+        solidRasterState->Release();
+        solidRasterState = nullptr;
+    }
+    // Release the outline rasterizer state.
+    if (outlineRasterState)
+    {
+        outlineRasterState->Release();
+        outlineRasterState = nullptr;
+    }
+
     // Releases the swap chain.
     if (swapChain) {
         swapChain->Release();
@@ -645,24 +713,24 @@ void RenderFrame(HWND hwnd)
     deviceContext->PSSetConstantBuffers(
         0, 1, &objectSettingsBuffer);
 
-    // Drawing the cube and making it move.
-    static ULONGLONG previousTime = GetTickCount64();
+    // Get the current playback position of the music.
+    double musicTime = GetMusicPosition();
 
-    ULONGLONG currentTime = GetTickCount64();
-    float deltaTime = (currentTime - previousTime) / 1000.0f;
-    previousTime = currentTime;
+    // Calculate how much time has passed since this note started.
+    double elapsedTime = musicTime - noteStartTime;
 
-    // Move the cube toward the player.
-    cubePositionZ -= deltaTime * 1.5f;
+    // Move the cube according to the music playback clock.
+    cubePositionZ = 5.0f - static_cast<float>(elapsedTime) * 1.5f;
 
     // Check whether the cube passed the hit window without being hit.
-    if (cubePositionZ < -0.05f && !noteHit && !noteMissed)
+    if (cubePositionZ < -0.15f && !noteHit && !noteMissed)
     {
         noteMissed = true;
 
         // Record the miss and reset the combo.
         missCount++;
         combo = 0;
+        multiplier = 1;
 
         // Update the window title with the current statistics.
         wchar_t title[150];
@@ -681,6 +749,9 @@ void RenderFrame(HWND hwnd)
         {
             cubePositionZ = 5.0f;
 
+            // Start timing the next cube from the current music position.
+            noteStartTime = musicTime;
+
             // Prepare the next cube.
             noteHit = false;
             noteMissed = false;
@@ -692,13 +763,46 @@ void RenderFrame(HWND hwnd)
             cubePositionX = -1.5f + (selectedLane * 0.6f);
         }
     }
-
+    // Set the cube's position and rendering settings.
     ObjectSettings settings = {};
     settings.rotateObject = 1;
     settings.cubePositionZ = cubePositionZ;
     settings.cubePositionX = cubePositionX;
 
-    /// Send the cube's rotation and movement settings to the shaders.
+    // Determine whether the cube is inside a timing zone.
+    bool perfectZone =
+        cubePositionZ >= 0.03f && cubePositionZ <= 0.27f;
+
+    bool goodZone =
+        cubePositionZ >= -0.15f && cubePositionZ <= 0.45f
+        && !perfectZone;
+
+    // Draw the colored outline first, behind the blue cube.
+    if (perfectZone || goodZone)
+    {
+        settings.padding = 1.0f;
+
+        deviceContext->UpdateSubresource(
+            objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
+
+        // Switch to wireframe rendering.
+        deviceContext->RSSetState(outlineRasterState);
+
+        deviceContext->IASetVertexBuffers(
+            0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+
+        deviceContext->IASetIndexBuffer(
+            indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+
+        deviceContext->DrawIndexed(36, 0, 0);
+
+        // Restore the original solid rasterizer state.
+        deviceContext->RSSetState(solidRasterState);
+    }
+
+    // Draw the original blue cube.
+    settings.padding = 0.0f;
+
     deviceContext->UpdateSubresource(
         objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
 
@@ -763,8 +867,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         // Check whether the correct lane key was pressed
         // while the cube is inside the hit window.
         if (pressedLane == selectedLane &&
-            cubePositionZ >= -0.05f &&
-            cubePositionZ <= 0.35f &&
+            cubePositionZ >= -0.15f &&
+            cubePositionZ <= 0.45f &&
             !noteHit && !noteMissed)
         {
             noteHit = true;
@@ -772,18 +876,36 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             // Store the timing judgment.
             const wchar_t* judgment;
 
+            // Determine the timing judgment.
+            int basePoints = 0;
+
             // Perfect: very close to the yellow hit line.
-            if (cubePositionZ >= 0.07f && cubePositionZ <= 0.23f)
+            if (cubePositionZ >= 0.03f && cubePositionZ <= 0.27f)
             {
                 judgment = L"PERFECT!";
-                score += 500;
+                basePoints = 500;
             }
             // Good: inside the wider hit window.
             else
             {
                 judgment = L"GOOD!";
-                score += 300;
+                basePoints = 300;
             }
+
+            // Determine the multiplier based on the combo.
+            if (combo >= 30)
+                multiplier = 5;
+            else if (combo >= 20)
+                multiplier = 4;
+            else if (combo >= 10)
+                multiplier = 3;
+            else if (combo >= 5)
+                multiplier = 2;
+            else
+                multiplier = 1;
+
+            // Apply the multiplier to the points earned.
+            score += basePoints * multiplier;
 
             // Increase the successful hit count and combo.
             hitCount++;
@@ -796,10 +918,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
 
             // Display the judgment and current statistics.
-            wchar_t title[150];
-            wsprintf(title,
-                L"CubeBeatz - %s | Score: %d | Combo: %d",
-                judgment, score, combo);
+            wchar_t title[200];
+            wsprintf(title, L"CubeBeatz - %s | Score: %d | Combo: %d", judgment, score, combo);
 
             SetWindowText(hwnd, title);
         }
@@ -937,6 +1057,39 @@ int WINAPI WinMain(
         return 1;
     }
 
+    // Initialize the audio engine.
+    if (!InitializeAudio())
+    {
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 1;
+    }
+
+    // Load the music file.
+    if (!LoadMusic(
+        L"C:\\Users\\Lance Vang\\Desktop\\CubeBeatz\\CubeBeatz\\Music\\The Synth Wars Jack O'Reilly (un show mas).mp3"))
+    {
+        MessageBox(hwnd, L"Failed to load music.",
+            L"CubeBeatz Error", MB_OK | MB_ICONERROR);
+
+        CleanupAudio();
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 1;
+    }
+
+    // Start playing the music.
+    if (!PlayMusic())
+    {
+        MessageBox(hwnd, L"Failed to play music.",
+            L"CubeBeatz Error", MB_OK | MB_ICONERROR);
+
+        CleanupAudio();
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 1;
+    }
+
 
 
     //displays the application window
@@ -955,6 +1108,10 @@ int WINAPI WinMain(
 			RenderFrame(hwnd);
         }
     }
+
+    //releases audio
+    CleanupAudio(); 
+
     //release direct3d resources before program exits 
     Cleanup();
 
