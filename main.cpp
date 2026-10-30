@@ -49,6 +49,18 @@ float cubePositionZ = 5.0f;
 // Stores the music playback time when the current note begins moving.
 double noteStartTime = 0.0;
 
+// Controls the cube's movement along the track.
+const float NOTE_START_Z = 5.0f;
+const float NOTE_HIT_Z = 0.15f;
+const float NOTE_SPEED = 1.5f;
+
+// Calculates how many seconds a cube needs to reach the hit line.
+const double NOTE_TRAVEL_TIME =
+(NOTE_START_Z - NOTE_HIT_Z) / NOTE_SPEED;
+
+// Tracks whether all chart notes have been completed.
+bool chartFinished = false;
+
 // Stores which of the six lanes the player is selecting.
 // Lane 0 = S, Lane 1 = D, Lane 2 = F,
 // Lane 3 = J, Lane 4 = K, Lane 5 = L.
@@ -66,11 +78,11 @@ struct Note
 // Lane 3 = J, Lane 4 = K, Lane 5 = L.
 Note noteChart[] =
 {
-    {4.0, 0}, // 4 seconds: S
-    {4.5, 2}, // 4.5 seconds: F
-    {5.0, 3}, // 5 seconds: J
-    {5.5, 1}, // 5.5 seconds: D
-    {6.0, 5}  // 6 seconds: L
+    {8.0, 0},  // 8 seconds: S
+    {14.0, 2}, // 14 seconds: F
+    {20.0, 3}, // 20 seconds: J
+    {26.0, 1}, // 26 seconds: D
+    {32.0, 5}  // 32 seconds: L
 };
 
 // Tracks which note in the chart should be played next.
@@ -716,11 +728,16 @@ void RenderFrame(HWND hwnd)
     // Get the current playback position of the music.
     double musicTime = GetMusicPosition();
 
-    // Calculate how much time has passed since this note started.
-    double elapsedTime = musicTime - noteStartTime;
+    // Only move the cube while there are notes remaining.
+    if (!chartFinished)
+    {
+        // Calculate the time elapsed since this note's movement began.
+        double elapsedTime = musicTime - noteStartTime;
 
-    // Move the cube according to the music playback clock.
-    cubePositionZ = 5.0f - static_cast<float>(elapsedTime) * 1.5f;
+        // Calculate the cube's position using the music clock.
+        cubePositionZ = NOTE_START_Z -
+            static_cast<float>(elapsedTime) * NOTE_SPEED;
+    }
 
     // Check whether the cube passed the hit window without being hit.
     if (cubePositionZ < -0.15f && !noteHit && !noteMissed)
@@ -741,28 +758,38 @@ void RenderFrame(HWND hwnd)
         SetWindowText(hwnd, title);
     }
 
-    // Reset the cube after it has been hit or missed.
-    if (noteHit || noteMissed)
+    // Prepare the next note after the current cube passes the track.
+    if ((noteHit || noteMissed) && cubePositionZ < -1.5f)
     {
-        // Wait until the cube passes the front of the track.
-        if (cubePositionZ < -1.5f)
+        // Move to the next note in the chart.
+        currentNoteIndex++;
+
+        // Check whether all chart notes have been completed.
+        if (currentNoteIndex >= totalNotes)
         {
-            cubePositionZ = 5.0f;
-
-            // Start timing the next cube from the current music position.
-            noteStartTime = musicTime;
-
-            // Prepare the next cube.
-            noteHit = false;
-            noteMissed = false;
-
-            // Move the next cube to the following lane.
-            selectedLane = (selectedLane + 1) % 6;
+            chartFinished = true;
+        }
+        else
+        {
+            // Load the next note's assigned lane.
+            selectedLane = noteChart[currentNoteIndex].lane;
 
             // Update the cube's horizontal position.
             cubePositionX = -1.5f + (selectedLane * 0.6f);
+
+            // Calculate when the next cube should begin moving.
+            noteStartTime =
+                noteChart[currentNoteIndex].hitTime - NOTE_TRAVEL_TIME;
+
+            // Reset the cube to its starting position.
+            cubePositionZ = NOTE_START_Z;
+
+            // Prepare for the next note.
+            noteHit = false;
+            noteMissed = false;
         }
     }
+
     // Set the cube's position and rendering settings.
     ObjectSettings settings = {};
     settings.rotateObject = 1;
@@ -1090,6 +1117,14 @@ int WINAPI WinMain(
         return 1;
     }
 
+    // Set the starting time for the first chart note.
+    noteStartTime = noteChart[0].hitTime - NOTE_TRAVEL_TIME;
+
+    // Select the lane assigned to the first note.
+    selectedLane = noteChart[0].lane;
+
+    // Set the cube's initial horizontal position.
+    cubePositionX = -1.5f + (selectedLane * 0.6f);
 
 
     //displays the application window
