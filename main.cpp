@@ -10,6 +10,8 @@
 #include <dxgi.h> // graphics display and swap-chain functions
 #include <d3dcompiler.h> //compiles HLSL shaders
 #include <sal.h>
+#include <vector>
+#include <cmath>
 #include "AudioManager.h"
 
 // Links the Direct3D and DXGI Libraries 
@@ -42,29 +44,13 @@ struct ObjectSettings
 
 // Sends object settings to the GPU.
 ID3D11Buffer* objectSettingsBuffer = nullptr;
-
-// Controls how far the cube has traveled down the track.
-float cubePositionZ = 5.0f;
-
-// Stores the music playback time when the current note begins moving.
-double noteStartTime = 0.0;
-
-// Controls the cube's movement along the track.
+// Controls the movement of rhythm notes.
 const float NOTE_START_Z = 5.0f;
 const float NOTE_HIT_Z = 0.15f;
 const float NOTE_SPEED = 1.5f;
 
-// Calculates how many seconds a cube needs to reach the hit line.
-const double NOTE_TRAVEL_TIME =
-(NOTE_START_Z - NOTE_HIT_Z) / NOTE_SPEED;
-
-// Tracks whether all chart notes have been completed.
-bool chartFinished = false;
-
-// Stores which of the six lanes the player is selecting.
-// Lane 0 = S, Lane 1 = D, Lane 2 = F,
-// Lane 3 = J, Lane 4 = K, Lane 5 = L.
-int selectedLane = 0;
+// Calculates how many seconds a note needs to reach the hit line.
+const double NOTE_TRAVEL_TIME =(NOTE_START_Z - NOTE_HIT_Z) / NOTE_SPEED;
 
 // Stores the information for an individual rhythm note.
 struct Note
@@ -72,6 +58,23 @@ struct Note
     double hitTime; // Time in the song when the note should be hit.
     int lane;       // Lane where the note will appear.
 };
+
+// Stores an individual note currently active in the game.
+struct ActiveNote
+{
+    double hitTime;  // Scheduled time to hit the note.
+    int lane;        // Lane where the note appears.
+    float positionZ; // Current position along the track.
+
+    bool hit;        // Whether the player successfully hit it.
+    bool missed;     // Whether the player missed it.
+};
+
+// Stores all notes currently active on the track.
+std::vector<ActiveNote> activeNotes;
+
+// Tracks the next note in the chart that needs to spawn.
+int nextNoteToSpawn = 0;
 
 // Stores the scheduled notes for the song.
 // Lane 0 = S, Lane 1 = D, Lane 2 = F,
@@ -85,20 +88,8 @@ Note noteChart[] =
     {32.0, 5}  // 32 seconds: L
 };
 
-// Tracks which note in the chart should be played next.
-int currentNoteIndex = 0;
-
 // Calculates how many notes are in the chart.
 const int totalNotes = sizeof(noteChart) / sizeof(noteChart[0]);
-
-// Stores the horizontal position of the cube.
-float cubePositionX = -1.5f;
-
-// Tracks whether the current cube has been hit.
-bool noteHit = false;
-
-// Tracks whether the current cube has been missed.
-bool noteMissed = false;
 
 // Counts successful hits.
 int hitCount = 0;
@@ -124,7 +115,7 @@ ID3D11Buffer* vertexBuffer = nullptr;
 // Stores triangle indices on the GPU.
 ID3D11Buffer* indexBuffer = nullptr;
 
-// Buffers used to store the four-lane track geometry.
+// Buffers used to store the six-lane track geometry.
 ID3D11Buffer* trackVertexBuffer = nullptr;
 ID3D11Buffer* trackIndexBuffer = nullptr;
 
@@ -145,7 +136,7 @@ struct Vertex {
     float x, y, z; 
 };
 
-//Four lane track vertices 
+// Six lane track vertices
 Vertex trackVertices[] =
 {
     {-1.8f, -0.6f, -0.2f},
@@ -452,7 +443,7 @@ bool CreateCubeBuffers() {
     return true;
 }
 
-//creates the four lane track buffers
+//creates the six lane track buffers
 bool CreateTrackBuffers() {
     // Describe the track's vertex buffer.
     D3D11_BUFFER_DESC vertexBufferDesc = {};
@@ -728,92 +719,120 @@ void RenderFrame(HWND hwnd)
     // Get the current playback position of the music.
     double musicTime = GetMusicPosition();
 
-    // Only move the cube while there are notes remaining.
-    if (!chartFinished)
+    // Spawn notes when their scheduled travel time begins.
+    while (nextNoteToSpawn < totalNotes &&
+        musicTime >= noteChart[nextNoteToSpawn].hitTime - NOTE_TRAVEL_TIME)
     {
-        // Calculate the time elapsed since this note's movement began.
-        double elapsedTime = musicTime - noteStartTime;
+        // Add the next chart note to the active notes list.
+        ActiveNote newNote;
 
-        // Calculate the cube's position using the music clock.
-        cubePositionZ = NOTE_START_Z -
-            static_cast<float>(elapsedTime) * NOTE_SPEED;
-    }
+        newNote.hitTime = noteChart[nextNoteToSpawn].hitTime;
+        newNote.lane = noteChart[nextNoteToSpawn].lane;
+        newNote.positionZ = NOTE_START_Z;
+        newNote.hit = false;
+        newNote.missed = false;
 
-    // Check whether the cube passed the hit window without being hit.
-    if (cubePositionZ < -0.15f && !noteHit && !noteMissed)
-    {
-        noteMissed = true;
+        activeNotes.push_back(newNote);
 
-        // Record the miss and reset the combo.
-        missCount++;
-        combo = 0;
-        multiplier = 1;
-
-        // Update the window title with the current statistics.
-        wchar_t title[150];
-        wsprintf(title,
-            L"CubeBeatz - Score: %d | Combo: %d | Misses: %d",
-            score, combo, missCount);
-
-        SetWindowText(hwnd, title);
-    }
-
-    // Prepare the next note after the current cube passes the track.
-    if ((noteHit || noteMissed) && cubePositionZ < -1.5f)
-    {
         // Move to the next note in the chart.
-        currentNoteIndex++;
+        nextNoteToSpawn++;
+    }
 
-        // Check whether all chart notes have been completed.
-        if (currentNoteIndex >= totalNotes)
+    // Update the position of every active note.
+    for (auto& note : activeNotes)
+    {
+        note.positionZ = NOTE_HIT_Z +
+            static_cast<float>(note.hitTime - musicTime) * NOTE_SPEED;
+    }
+
+    // Check every active note for a miss.
+    for (auto& note : activeNotes)
+    {
+        // Ignore notes that have already been hit or missed.
+        if (note.hit || note.missed)
+            continue;
+
+        // Check whether the note has passed the miss boundary.
+        if (note.positionZ < -0.15f)
         {
-            chartFinished = true;
-        }
-        else
-        {
-            // Load the next note's assigned lane.
-            selectedLane = noteChart[currentNoteIndex].lane;
+            note.missed = true;
 
-            // Update the cube's horizontal position.
-            cubePositionX = -1.5f + (selectedLane * 0.6f);
+            // Record the miss and reset the combo.
+            missCount++;
+            combo = 0;
+            multiplier = 1;
 
-            // Calculate when the next cube should begin moving.
-            noteStartTime =
-                noteChart[currentNoteIndex].hitTime - NOTE_TRAVEL_TIME;
+            // Update the window title with the current statistics.
+            wchar_t title[150];
 
-            // Reset the cube to its starting position.
-            cubePositionZ = NOTE_START_Z;
+            wsprintf(title,
+                L"CubeBeatz - Score: %d | Combo: %d | Misses: %d",
+                score, combo, missCount);
 
-            // Prepare for the next note.
-            noteHit = false;
-            noteMissed = false;
+            SetWindowText(hwnd, title);
         }
     }
 
-    // Set the cube's position and rendering settings.
-    ObjectSettings settings = {};
-    settings.rotateObject = 1;
-    settings.cubePositionZ = cubePositionZ;
-    settings.cubePositionX = cubePositionX;
-
-    // Determine whether the cube is inside a timing zone.
-    bool perfectZone =
-        cubePositionZ >= 0.03f && cubePositionZ <= 0.27f;
-
-    bool goodZone =
-        cubePositionZ >= -0.15f && cubePositionZ <= 0.45f
-        && !perfectZone;
-
-    // Draw the colored outline first, behind the blue cube.
-    if (perfectZone || goodZone)
+    // Remove notes that have already been hit or missed
+// and have traveled far enough down the track.
+    for (int i = static_cast<int>(activeNotes.size()) - 1; i >= 0; --i)
     {
-        settings.padding = 1.0f;
+        if ((activeNotes[i].hit || activeNotes[i].missed) &&
+            activeNotes[i].positionZ < -1.5f)
+        {
+            // Remove this completed note from the active notes list.
+            activeNotes.erase(activeNotes.begin() + i);
+        }
+    }
+
+
+    // Render every active note currently on the track.
+    for (const auto& note : activeNotes)
+    {
+        // Set the position and rendering settings for this note.
+        ObjectSettings settings = {};
+        settings.rotateObject = 1;
+        settings.cubePositionZ = note.positionZ;
+
+        // Calculate the horizontal position using the note's lane.
+        settings.cubePositionX = -1.5f + (note.lane * 0.6f);
+
+        // Determine whether this note is inside a timing zone.
+        bool perfectZone =
+            note.positionZ >= 0.03f && note.positionZ <= 0.27f;
+
+        bool goodZone =
+            note.positionZ >= -0.15f && note.positionZ <= 0.45f
+            && !perfectZone;
+
+        // Draw the colored outline first.
+        if (perfectZone || goodZone)
+        {
+            settings.padding = 1.0f;
+
+            deviceContext->UpdateSubresource(
+                objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
+
+            // Switch to wireframe rendering.
+            deviceContext->RSSetState(outlineRasterState);
+
+            deviceContext->IASetVertexBuffers(
+                0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+
+            deviceContext->IASetIndexBuffer(
+                indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+
+            deviceContext->DrawIndexed(36, 0, 0);
+
+            // Restore solid rendering.
+            deviceContext->RSSetState(solidRasterState);
+        }
+
+        // Draw the solid blue note.
+        settings.padding = 0.0f;
 
         deviceContext->UpdateSubresource(
             objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
-
-        // Switch to wireframe rendering.
-        deviceContext->RSSetState(outlineRasterState);
 
         deviceContext->IASetVertexBuffers(
             0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
@@ -822,31 +841,14 @@ void RenderFrame(HWND hwnd)
             indexBuffer, DXGI_FORMAT_R32_UINT, 0);
 
         deviceContext->DrawIndexed(36, 0, 0);
-
-        // Restore the original solid rasterizer state.
-        deviceContext->RSSetState(solidRasterState);
     }
 
-    // Draw the original blue cube.
-    settings.padding = 0.0f;
-
-    deviceContext->UpdateSubresource(
-        objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
-
-    // Set the cube vertex and index buffers.
-    deviceContext->IASetVertexBuffers(
-        0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
-
-    deviceContext->IASetIndexBuffer(
-        indexBuffer, DXGI_FORMAT_R32_UINT, 0);
-
-    // Draw all 12 triangles of the cube.
-    deviceContext->DrawIndexed(36, 0, 0);
-
-    // drawing the track
+    // Prepare settings for drawing the track.
+    ObjectSettings settings = {};
     settings.rotateObject = 0;
     settings.cubePositionZ = 0.0f;
     settings.cubePositionX = 0.0f;
+    settings.padding = 0.0f;
 
     // Tell the shaders not to apply the cube's Y rotation.
     deviceContext->UpdateSubresource(
@@ -891,23 +893,50 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         else if (wParam == 'L')
             pressedLane = 5;
 
-        // Check whether the correct lane key was pressed
-        // while the cube is inside the hit window.
-        if (pressedLane == selectedLane &&
-            cubePositionZ >= -0.15f &&
-            cubePositionZ <= 0.45f &&
-            !noteHit && !noteMissed)
+        // Check active notes to find one that matches the pressed lane.
+        int closestNoteIndex = -1;
+        float closestDistance = 999.0f;
+
+        for (int i = 0; i < static_cast<int>(activeNotes.size()); i++)
         {
-            noteHit = true;
+            ActiveNote& note = activeNotes[i];
+
+            // Ignore notes that have already been hit or missed.
+            if (note.hit || note.missed)
+                continue;
+
+            // Check whether the note belongs to the pressed lane.
+            if (note.lane != pressedLane)
+                continue;
+
+            // Check whether the note is inside the hit window.
+            if (note.positionZ >= -0.15f &&
+                note.positionZ <= 0.45f)
+            {
+                // Find the note closest to the hit line.
+                float distance = std::fabs(note.positionZ - NOTE_HIT_Z);
+
+                if (distance < closestDistance)
+                {
+                    closestDistance = distance;
+                    closestNoteIndex = i;
+                }
+            }
+        }
+
+        // Award points if a matching note was found.
+        if (closestNoteIndex != -1)
+        {
+            // Mark the note as successfully hit.
+            activeNotes[closestNoteIndex].hit = true;
 
             // Store the timing judgment.
             const wchar_t* judgment;
 
-            // Determine the timing judgment.
             int basePoints = 0;
 
-            // Perfect: very close to the yellow hit line.
-            if (cubePositionZ >= 0.03f && cubePositionZ <= 0.27f)
+            // Perfect: very close to the hit line.
+            if (closestDistance <= 0.12f)
             {
                 judgment = L"PERFECT!";
                 basePoints = 500;
@@ -919,7 +948,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 basePoints = 300;
             }
 
-            // Determine the multiplier based on the combo.
+            // Increase the successful hit count and combo.
+            hitCount++;
+            combo++;
+
+            // Determine the multiplier based on the updated combo.
             if (combo >= 30)
                 multiplier = 5;
             else if (combo >= 20)
@@ -934,10 +967,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             // Apply the multiplier to the points earned.
             score += basePoints * multiplier;
 
-            // Increase the successful hit count and combo.
-            hitCount++;
-            combo++;
-
             // Update the highest combo if necessary.
             if (combo > maxCombo)
             {
@@ -946,7 +975,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
             // Display the judgment and current statistics.
             wchar_t title[200];
-            wsprintf(title, L"CubeBeatz - %s | Score: %d | Combo: %d", judgment, score, combo);
+
+            wsprintf(title,
+                L"CubeBeatz - %s | Score: %d | Combo: %d",
+                judgment, score, combo);
 
             SetWindowText(hwnd, title);
         }
@@ -1116,16 +1148,6 @@ int WINAPI WinMain(
         DestroyWindow(hwnd);
         return 1;
     }
-
-    // Set the starting time for the first chart note.
-    noteStartTime = noteChart[0].hitTime - NOTE_TRAVEL_TIME;
-
-    // Select the lane assigned to the first note.
-    selectedLane = noteChart[0].lane;
-
-    // Set the cube's initial horizontal position.
-    cubePositionX = -1.5f + (selectedLane * 0.6f);
-
 
     //displays the application window
     ShowWindow(hwnd, nCmdShow);
