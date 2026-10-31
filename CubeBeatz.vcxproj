@@ -125,6 +125,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="AudioAnalysis.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="AudioManager.cpp" />
   </ItemGroup>
@@ -143,6 +144,7 @@
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="AudioAnalysis.h" />
     <ClInclude Include="AudioManager.h" />
     <ClInclude Include="miniaudio.h" />
   </ItemGroup>
