@@ -329,7 +329,7 @@ bool AnalyzeMusic(
     // Begin detecting sudden increases in frequency activity.
 
     // Minimum time between detected notes.
-    const double minimumNoteSpacing = 0.20;
+    const double minimumNoteSpacing = 0.28;
 
     // Number of previous windows used to calculate background flux.
     const size_t analysisWindow = 20;
@@ -454,8 +454,12 @@ bool AnalyzeMusic(
                 int selectedLane =
                     (frequencyRange * 2) + lanePairDistribution(randomGenerator);
 
-                // Prevent consecutive notes from using the same lane.
-                while (selectedLane == previousLane)
+                // Occasionally allow repeated notes in the same lane.
+                // This creates more natural patterns when the music supports them.
+                std::uniform_int_distribution<int> repeatDistribution(0, 99);
+
+                if (selectedLane == previousLane &&
+                    repeatDistribution(randomGenerator) < 65)
                 {
                     selectedLane =
                         (frequencyRange * 2) + lanePairDistribution(randomGenerator);

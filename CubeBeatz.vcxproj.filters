@@ -47,5 +47,8 @@
     <Media Include="Music\The Synth Wars Jack O%27Reilly (un show mas).mp3">
       <Filter>Source Files\Music</Filter>
     </Media>
+    <Media Include="Music\シーモアバトル - arrange - from FINAL FANTASY.mp3">
+      <Filter>Source Files\Music</Filter>
+    </Media>
   </ItemGroup>
 </Project>

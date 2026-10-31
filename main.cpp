@@ -10,9 +10,12 @@
 #include <dxgi.h> // graphics display and swap-chain functions
 #include <d3dcompiler.h> //compiles HLSL shaders
 #include <sal.h>
+#include <filesystem>
 #include <vector>
 #include <cmath>
 #include <chrono>
+#include <string>
+#include <commdlg.h>
 #include "AudioManager.h"
 #include "AudioAnalysis.h"
 
@@ -20,6 +23,7 @@
 #pragma comment(lib, "d3d11.lib")  
 #pragma comment(lib, "dxgi.lib") 
 #pragma comment(lib, "d3dcompiler.lib") 
+#pragma comment(lib, "Comdlg32.lib")
 
 // Identifies the application window
 const wchar_t CLASS_NAME[] = L"CubeBeatzWindowClass"; 
@@ -180,6 +184,48 @@ unsigned int cubeIndices[] = {
 
 };
 
+// Finds all MP3 and WAV files inside the Music folder.
+std::vector<std::filesystem::path> FindMusicFiles()
+{
+    // Stores the songs that are discovered.
+    std::vector<std::filesystem::path> musicFiles;
+
+    // Locate the Music folder relative to the game's working directory.
+    std::filesystem::path musicFolder =
+        std::filesystem::current_path() / L"Music";
+
+    // Check whether the Music folder exists.
+    if (!std::filesystem::exists(musicFolder))
+    {
+        return musicFiles;
+    }
+
+    // Go through every file inside the Music folder.
+    for (const auto& entry :
+        std::filesystem::directory_iterator(musicFolder))
+    {
+        // Ignore folders and check only actual files.
+        if (!entry.is_regular_file())
+        {
+            continue;
+        }
+
+        // Get the file extension.
+        std::wstring extension = entry.path().extension().wstring();
+
+        // Add MP3 and WAV files to our song list.
+        if (extension == L".mp3" ||
+            extension == L".MP3" ||
+            extension == L".wav" ||
+            extension == L".WAV")
+        {
+            musicFiles.push_back(entry.path());
+        }
+    }
+
+    return musicFiles;
+}
+
 //Initializes Direct 3D and prepares the window for rendering 
 bool InitializeDirect3D(HWND hwnd) {
 	DXGI_SWAP_CHAIN_DESC scd = {}; //Describes the swap chain configuration
@@ -329,6 +375,41 @@ bool InitializeDirect3D(HWND hwnd) {
     // Reports that initialization succeeded.
     return true;
 
+}
+
+// Opens a Windows file picker so the player can select a song.
+bool SelectMusicFile(std::wstring& selectedFile)
+{
+    // Stores the selected file path.
+    wchar_t filePath[32768] = {};
+
+    // Configure the Windows file selection dialog.
+    OPENFILENAMEW dialog = {};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = nullptr;
+    dialog.lpstrFilter =
+        L"Audio Files (*.mp3;*.wav)\0*.mp3;*.wav\0"
+        L"MP3 Files (*.mp3)\0*.mp3\0"
+        L"WAV Files (*.wav)\0*.wav\0"
+        L"All Files (*.*)\0*.*\0";
+
+    dialog.lpstrFile = filePath;
+    dialog.nMaxFile = static_cast<DWORD>(sizeof(filePath) / sizeof(filePath[0]));
+    dialog.lpstrTitle = L"Select a Song for CubeBeatz";
+    dialog.Flags =
+        OFN_FILEMUSTEXIST |
+        OFN_PATHMUSTEXIST |
+        OFN_NOCHANGEDIR;
+
+    // Display the file picker.
+    if (GetOpenFileNameW(&dialog))
+    {
+        selectedFile = filePath;
+        return true;
+    }
+
+    // The player did not select a file.
+    return false;
 }
 
 bool CompileShader(const wchar_t* filename, const char* entryPoint, const char* shaderModel, ID3DBlob** shaderblob) {
@@ -1117,14 +1198,21 @@ int WINAPI WinMain(
         return 1;
     }
 
-    // Store the path to the music file.
-    const wchar_t* musicFile =
-        L"C:\\Users\\Lance Vang\\Desktop\\CubeBeatz\\CubeBeatz\\Music\\The Synth Wars Jack O'Reilly (un show mas).mp3";
+    // Ask the player to select a music file.
+    std::wstring musicFile;
 
-    // Load the music file for playback.
-    if (!LoadMusic(musicFile))
+    if (!SelectMusicFile(musicFile))
     {
-        MessageBox(hwnd, L"Failed to load music.",
+        CleanupAudio();
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 0;
+    }
+
+    // Load the selected music file.
+    if (!LoadMusic(musicFile.c_str()))
+    {
+        MessageBox(hwnd, L"Failed to load the selected music.",
             L"CubeBeatz Error", MB_OK | MB_ICONERROR);
 
         CleanupAudio();
@@ -1133,10 +1221,10 @@ int WINAPI WinMain(
         return 1;
     }
 
-    // Analyze the music and automatically generate its note chart.
-    if (!AnalyzeMusic(musicFile, noteChart))
+    // Analyze the selected music and generate its note chart.
+    if (!AnalyzeMusic(musicFile.c_str(), noteChart))
     {
-        MessageBox(hwnd, L"Failed to analyze the music.",
+        MessageBox(hwnd, L"Failed to analyze the selected music.",
             L"CubeBeatz Error", MB_OK | MB_ICONERROR);
 
         CleanupAudio();
