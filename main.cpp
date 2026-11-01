@@ -84,6 +84,11 @@ std::chrono::steady_clock::time_point gameStartTime;
 // Tracks whether the music has started.
 bool musicStarted = false;
 
+// Preparation countdown before gameplay begins.
+const double PREPARATION_TIME = 15.0;
+double countdownStartTime = 0.0;
+bool countdownActive = false;
+
 // Identifies which screen the game is currently displaying.
 enum class GameState
 {
@@ -245,6 +250,12 @@ int selectedSongIndex = 0;
 // Handles the song selection list and Play button.
 HWND songListBox = nullptr;
 HWND playButton = nullptr;
+
+// Displays the preparation countdown before the song begins.
+HWND countdownLabel = nullptr;
+
+// Tracks the last countdown number displayed.
+int lastCountdownDisplayed = -1;
 
 // Identifies the controls when Windows sends messages.
 const int SONG_LIST_ID = 1001;
@@ -487,6 +498,19 @@ void CreateSongSelectionMenu(HWND hwnd)
         550, 480,
         150, 45,
         SWP_SHOWWINDOW
+    );
+
+    // Create the countdown label. It starts hidden.
+    countdownLabel = CreateWindowEx(
+        0,
+        L"STATIC",
+        L"Get Ready!",
+        WS_CHILD | SS_CENTER,
+        400, 300, 450, 60,
+        hwnd,
+        nullptr,
+        GetModuleHandle(nullptr),
+        nullptr
     );
 }
 
@@ -859,7 +883,6 @@ void Cleanup()
 
 
 //A Dark background color: 
-
 void RenderFrame(HWND hwnd)
 {
     // Dark navy background color.
@@ -901,105 +924,166 @@ void RenderFrame(HWND hwnd)
     deviceContext->PSSetConstantBuffers(
         0, 1, &objectSettingsBuffer);
 
-    // Get the current position of the music.
-    double musicTime = GetMusicPosition();
-
-    // Spawn notes when their scheduled travel time begins.
-    while (nextNoteToSpawn < static_cast<int>(noteChart.size()) &&
-        musicTime >= noteChart[nextNoteToSpawn].hitTime - NOTE_TRAVEL_TIME)
+    // Handle the 15-second preparation countdown.
+    if (countdownActive)
     {
-        // Add the next chart note to the active notes list.
-        ActiveNote newNote;
+        // Calculate how many seconds have passed.
+        double elapsedTime =
+            (GetTickCount64() / 1000.0) - countdownStartTime;
 
-        newNote.hitTime = noteChart[nextNoteToSpawn].hitTime;
-        newNote.lane = noteChart[nextNoteToSpawn].lane;
-        newNote.positionZ = NOTE_START_Z;
-        newNote.hit = false;
-        newNote.missed = false;
+        // Calculate the remaining countdown seconds.
+        int remainingTime =
+            15 - static_cast<int>(elapsedTime);
 
-        activeNotes.push_back(newNote);
-
-        // Move to the next note in the chart.
-        nextNoteToSpawn++;
-    }
-
-    // Update the position of every active note.
-    for (auto& note : activeNotes)
-    {
-        note.positionZ = NOTE_HIT_Z +
-            static_cast<float>(note.hitTime - musicTime) * NOTE_SPEED;
-    }
-
-    // Check every active note for a miss.
-    for (auto& note : activeNotes)
-    {
-        // Ignore notes that have already been hit or missed.
-        if (note.hit || note.missed)
-            continue;
-
-        // Check whether the note has passed the miss boundary.
-        if (note.positionZ < -0.15f)
+        // Update the countdown display when the number changes.
+        if (remainingTime != lastCountdownDisplayed &&
+            remainingTime > 0)
         {
-            note.missed = true;
+            wchar_t countdownText[50];
 
-            // Record the miss and reset the combo.
-            missCount++;
-            combo = 0;
-            multiplier = 1;
+            wsprintf(countdownText, L"Get Ready! %d", remainingTime);
 
-            // Update the window title with the current statistics.
-            wchar_t title[150];
+            SetWindowText(countdownLabel, countdownText);
 
-            wsprintf(title,
-                L"CubeBeatz - Score: %d | Combo: %d | Misses: %d",
-                score, combo, missCount);
+            lastCountdownDisplayed = remainingTime;
+        }
 
-            SetWindowText(hwnd, title);
+        // Start the music after the countdown finishes.
+        if (elapsedTime >= PREPARATION_TIME)
+        {
+            countdownActive = false;
+
+            // Hide the countdown label.
+            ShowWindow(countdownLabel, SW_HIDE);
+
+            // Start the selected song.
+            PlayMusic();
+
+            // Allow gameplay to begin.
+            musicStarted = true;
         }
     }
 
-    // Remove notes that have already been hit or missed
-// and have traveled far enough down the track.
-    for (int i = static_cast<int>(activeNotes.size()) - 1; i >= 0; --i)
+    // Only process notes after the music has started.
+    if (musicStarted)
     {
-        if ((activeNotes[i].hit || activeNotes[i].missed) &&
-            activeNotes[i].positionZ < -1.5f)
+        // Get the current position of the music.
+        double musicTime = GetMusicPosition();
+
+        // Spawn notes when their scheduled travel time begins.
+        while (nextNoteToSpawn < static_cast<int>(noteChart.size()) &&
+            musicTime >= noteChart[nextNoteToSpawn].hitTime - NOTE_TRAVEL_TIME)
         {
-            // Remove this completed note from the active notes list.
-            activeNotes.erase(activeNotes.begin() + i);
+            // Add the next chart note to the active notes list.
+            ActiveNote newNote;
+
+            newNote.hitTime = noteChart[nextNoteToSpawn].hitTime;
+            newNote.lane = noteChart[nextNoteToSpawn].lane;
+            newNote.positionZ = NOTE_START_Z;
+            newNote.hit = false;
+            newNote.missed = false;
+
+            activeNotes.push_back(newNote);
+
+            // Move to the next note in the chart.
+            nextNoteToSpawn++;
         }
-    }
 
-
-    // Render every active note currently on the track.
-    for (const auto& note : activeNotes)
-    {
-        // Set the position and rendering settings for this note.
-        ObjectSettings settings = {};
-        settings.rotateObject = 1;
-        settings.cubePositionZ = note.positionZ;
-
-        // Calculate the horizontal position using the note's lane.
-        settings.cubePositionX = -1.5f + (note.lane * 0.6f);
-
-        // Determine whether this note is inside a timing zone.
-        bool perfectZone =
-            note.positionZ >= 0.03f && note.positionZ <= 0.27f;
-
-        bool goodZone =
-            note.positionZ >= -0.15f && note.positionZ <= 0.45f
-            && !perfectZone;
-
-        // Draw the colored outline first.
-        if (perfectZone || goodZone)
+        // Update the position of every active note.
+        for (auto& note : activeNotes)
         {
-            settings.padding = 1.0f;
+            note.positionZ = NOTE_HIT_Z +
+                static_cast<float>(note.hitTime - musicTime) * NOTE_SPEED;
+        }
+
+        // Check every active note for a miss.
+        for (auto& note : activeNotes)
+        {
+            // Ignore notes that have already been hit or missed.
+            if (note.hit || note.missed)
+                continue;
+
+            // Check whether the note has passed the miss boundary.
+            if (note.positionZ < -0.15f)
+            {
+                note.missed = true;
+
+                // Record the miss and reset the combo.
+                missCount++;
+                combo = 0;
+                multiplier = 1;
+
+                // Update the window title with the current statistics.
+                wchar_t title[150];
+
+                wsprintf(title,
+                    L"CubeBeatz - Score: %d | Combo: %d | Misses: %d",
+                    score, combo, missCount);
+
+                SetWindowText(hwnd, title);
+            }
+        }
+
+        // Remove notes that have already been hit or missed
+    // and have traveled far enough down the track.
+        for (int i = static_cast<int>(activeNotes.size()) - 1; i >= 0; --i)
+        {
+            if ((activeNotes[i].hit || activeNotes[i].missed) &&
+                activeNotes[i].positionZ < -1.5f)
+            {
+                // Remove this completed note from the active notes list.
+                activeNotes.erase(activeNotes.begin() + i);
+            }
+        }
+
+
+        // Render every active note currently on the track.
+        for (const auto& note : activeNotes)
+        {
+            // Set the position and rendering settings for this note.
+            ObjectSettings settings = {};
+            settings.rotateObject = 1;
+            settings.cubePositionZ = note.positionZ;
+
+            // Calculate the horizontal position using the note's lane.
+            settings.cubePositionX = -1.5f + (note.lane * 0.6f);
+
+            // Determine whether this note is inside a timing zone.
+            bool perfectZone =
+                note.positionZ >= 0.03f && note.positionZ <= 0.27f;
+
+            bool goodZone =
+                note.positionZ >= -0.15f && note.positionZ <= 0.45f
+                && !perfectZone;
+
+            // Draw the colored outline first.
+            if (perfectZone || goodZone)
+            {
+                settings.padding = 1.0f;
+
+                deviceContext->UpdateSubresource(
+                    objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
+
+                // Switch to wireframe rendering.
+                deviceContext->RSSetState(outlineRasterState);
+
+                deviceContext->IASetVertexBuffers(
+                    0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+
+                deviceContext->IASetIndexBuffer(
+                    indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+
+                deviceContext->DrawIndexed(36, 0, 0);
+
+                // Restore solid rendering.
+                deviceContext->RSSetState(solidRasterState);
+            }
+
+            // Draw the solid blue note.
+            settings.padding = 0.0f;
 
             deviceContext->UpdateSubresource(
                 objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
-
-            // Switch to wireframe rendering.
-            deviceContext->RSSetState(outlineRasterState);
 
             deviceContext->IASetVertexBuffers(
                 0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
@@ -1008,24 +1092,7 @@ void RenderFrame(HWND hwnd)
                 indexBuffer, DXGI_FORMAT_R32_UINT, 0);
 
             deviceContext->DrawIndexed(36, 0, 0);
-
-            // Restore solid rendering.
-            deviceContext->RSSetState(solidRasterState);
         }
-
-        // Draw the solid blue note.
-        settings.padding = 0.0f;
-
-        deviceContext->UpdateSubresource(
-            objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
-
-        deviceContext->IASetVertexBuffers(
-            0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
-
-        deviceContext->IASetIndexBuffer(
-            indexBuffer, DXGI_FORMAT_R32_UINT, 0);
-
-        deviceContext->DrawIndexed(36, 0, 0);
     }
 
     // Prepare settings for drawing the track.
@@ -1124,26 +1191,24 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             multiplier = 1;
             missCount = 0;
 
-            // Start playing the selected song.
-            if (!PlayMusic())
-            {
-                MessageBox(
-                    hwnd,
-                    L"Could not start music playback.",
-                    L"CubeBeatz Error",
-                    MB_OK | MB_ICONERROR
-                );
+            // Begin the 15-second preparation countdown.
+            countdownStartTime = GetTickCount64() / 1000.0;
+            countdownActive = true;
 
-                return 0;
-            }
+            // Music has not started yet.
+            musicStarted = false;
 
-            // Mark the game as started.
-            musicStarted = true;
+            // Switch to the gameplay screen.
             currentGameState = GameState::GAMEPLAY;
 
             // Hide the song selection controls.
             ShowWindow(songListBox, SW_HIDE);
             ShowWindow(playButton, SW_HIDE);
+
+            // Show the preparation countdown.
+            ShowWindow(countdownLabel, SW_SHOW);
+            SetWindowText(countdownLabel, L"Get Ready!");
+            lastCountdownDisplayed = -1;
 
             return 0;
         }
