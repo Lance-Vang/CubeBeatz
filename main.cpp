@@ -84,6 +84,16 @@ std::chrono::steady_clock::time_point gameStartTime;
 // Tracks whether the music has started.
 bool musicStarted = false;
 
+// Identifies which screen the game is currently displaying.
+enum class GameState
+{
+    SONG_SELECT,
+    GAMEPLAY
+};
+
+// Start the game on the song selection screen.
+GameState currentGameState = GameState::SONG_SELECT;
+
 // Counts successful hits.
 int hitCount = 0;
 
@@ -225,6 +235,20 @@ std::vector<std::filesystem::path> FindMusicFiles()
 
     return musicFiles;
 }
+
+// Stores all songs discovered in the Music folder.
+std::vector<std::filesystem::path> availableSongs;
+
+// Tracks which song is currently highlighted.
+int selectedSongIndex = 0;
+
+// Handles the song selection list and Play button.
+HWND songListBox = nullptr;
+HWND playButton = nullptr;
+
+// Identifies the controls when Windows sends messages.
+const int SONG_LIST_ID = 1001;
+const int PLAY_BUTTON_ID = 1002;
 
 //Initializes Direct 3D and prepares the window for rendering 
 bool InitializeDirect3D(HWND hwnd) {
@@ -376,6 +400,97 @@ bool InitializeDirect3D(HWND hwnd) {
     return true;
 
 }
+
+// Creates the song selection menu inside the game window.
+void CreateSongSelectionMenu(HWND hwnd)
+{
+    // Create the list that displays the available songs.
+    songListBox = CreateWindowEx(
+        0,
+        L"LISTBOX",
+        nullptr,
+        WS_CHILD | WS_VISIBLE | WS_BORDER |
+        LBS_NOTIFY | WS_VSCROLL,
+        400, 200, 450, 250,
+        hwnd,
+        (HMENU)SONG_LIST_ID,
+        GetModuleHandle(nullptr),
+        nullptr
+    );
+
+    // Check whether Windows successfully created the song list.
+    if (songListBox == nullptr)
+    {
+        MessageBox(
+            hwnd,
+            L"Failed to create the song list.",
+            L"CubeBeatz Error",
+            MB_OK | MB_ICONERROR
+        );
+        return;
+    }
+
+    // Add every discovered song to the list.
+    for (const auto& song : availableSongs)
+    {
+        // Display only the song's filename, not its full path.
+        std::wstring songName = song.filename().wstring();
+
+        SendMessage(
+            songListBox,
+            LB_ADDSTRING,
+            0,
+            reinterpret_cast<LPARAM>(songName.c_str())
+        );
+    }
+
+    // Highlight the first song automatically.
+    SendMessage(songListBox, LB_SETCURSEL, 0, 0);
+
+    // Create the Play button.
+    playButton = CreateWindowEx(
+        0,
+        L"BUTTON",
+        L"Play",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        550, 480, 150, 45,
+        hwnd,
+        (HMENU)PLAY_BUTTON_ID,
+        GetModuleHandle(nullptr),
+        nullptr
+    );
+
+    // Check whether Windows successfully created the Play button.
+    if (playButton == nullptr)
+    {
+        MessageBox(
+            hwnd,
+            L"Failed to create the Play button.",
+            L"CubeBeatz Error",
+            MB_OK | MB_ICONERROR
+        );
+        return;
+    }
+
+    // Bring the song selection controls to the front.
+    SetWindowPos(
+        songListBox,
+        HWND_TOP,
+        400, 200,
+        450, 250,
+        SWP_SHOWWINDOW
+    );
+
+    SetWindowPos(
+        playButton,
+        HWND_TOP,
+        550, 480,
+        150, 45,
+        SWP_SHOWWINDOW
+    );
+}
+
+
 
 // Opens a Windows file picker so the player can select a song.
 bool SelectMusicFile(std::wstring& selectedFile)
@@ -574,7 +689,7 @@ bool CreateTrackBuffers() {
     return true;
 }
 
-//
+
 bool CreateObjectSettingsBuffer()
 {
     D3D11_BUFFER_DESC bufferDesc = {};
@@ -945,6 +1060,96 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     switch (uMsg)
     {
+    case WM_COMMAND:
+    {
+        // Check whether the Play button was clicked.
+        if (LOWORD(wParam) == PLAY_BUTTON_ID &&
+            HIWORD(wParam) == BN_CLICKED)
+        {
+            // Get the song currently highlighted in the list.
+            selectedSongIndex = static_cast<int>(
+                SendMessage(songListBox, LB_GETCURSEL, 0, 0)
+                );
+
+            // Make sure a valid song was selected.
+            if (selectedSongIndex == LB_ERR)
+            {
+                MessageBox(
+                    hwnd,
+                    L"Please select a song first.",
+                    L"CubeBeatz",
+                    MB_OK | MB_ICONINFORMATION
+                );
+
+                return 0;
+            }
+
+            // Get the selected song's full file path.
+            std::wstring musicFile =
+                availableSongs[selectedSongIndex].wstring();
+
+            // Load the selected song.
+            if (!LoadMusic(musicFile.c_str()))
+            {
+                MessageBox(
+                    hwnd,
+                    L"Failed to load the selected song.",
+                    L"CubeBeatz Error",
+                    MB_OK | MB_ICONERROR
+                );
+
+                return 0;
+            }
+
+            // Generate a note chart for the selected song.
+            if (!AnalyzeMusic(musicFile.c_str(), noteChart))
+            {
+                MessageBox(
+                    hwnd,
+                    L"Failed to analyze the selected song.",
+                    L"CubeBeatz Error",
+                    MB_OK | MB_ICONERROR
+                );
+
+                return 0;
+            }
+
+            // Reset gameplay information for the new song.
+            activeNotes.clear();
+            nextNoteToSpawn = 0;
+            hitCount = 0;
+            score = 0;
+            combo = 0;
+            maxCombo = 0;
+            multiplier = 1;
+            missCount = 0;
+
+            // Start playing the selected song.
+            if (!PlayMusic())
+            {
+                MessageBox(
+                    hwnd,
+                    L"Could not start music playback.",
+                    L"CubeBeatz Error",
+                    MB_OK | MB_ICONERROR
+                );
+
+                return 0;
+            }
+
+            // Mark the game as started.
+            musicStarted = true;
+            currentGameState = GameState::GAMEPLAY;
+
+            // Hide the song selection controls.
+            ShowWindow(songListBox, SW_HIDE);
+            ShowWindow(playButton, SW_HIDE);
+
+            return 0;
+        }
+
+        break;
+    }
     case WM_KEYDOWN:
     {
         // Ignore gameplay input until the music begins.
@@ -1091,7 +1296,7 @@ int WINAPI WinMain(
         0,
         CLASS_NAME,
         L"CubeBeatz",
-        WS_OVERLAPPEDWINDOW,
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, 
         CW_USEDEFAULT, 
         1280, 720, 
@@ -1198,51 +1403,16 @@ int WINAPI WinMain(
         return 1;
     }
 
-    // Ask the player to select a music file.
-    std::wstring musicFile;
+    // Find all available songs in the Music folder.
+    availableSongs = FindMusicFiles();
 
-    if (!SelectMusicFile(musicFile))
+    // Check whether any songs were found.
+    if (availableSongs.empty())
     {
-        CleanupAudio();
-        Cleanup();
-        DestroyWindow(hwnd);
-        return 0;
-    }
-
-    // Load the selected music file.
-    if (!LoadMusic(musicFile.c_str()))
-    {
-        MessageBox(hwnd, L"Failed to load the selected music.",
-            L"CubeBeatz Error", MB_OK | MB_ICONERROR);
-
-        CleanupAudio();
-        Cleanup();
-        DestroyWindow(hwnd);
-        return 1;
-    }
-
-    // Analyze the selected music and generate its note chart.
-    if (!AnalyzeMusic(musicFile.c_str(), noteChart))
-    {
-        MessageBox(hwnd, L"Failed to analyze the selected music.",
-            L"CubeBeatz Error", MB_OK | MB_ICONERROR);
-
-        CleanupAudio();
-        Cleanup();
-        DestroyWindow(hwnd);
-        return 1;
-    }
-
-    // Display the application window.
-    ShowWindow(hwnd, nCmdShow);
-
-    // Start the music when the game begins.
-    if (!PlayMusic())
-    {
-        MessageBoxA(
+        MessageBox(
             hwnd,
-            "Could not start music playback.",
-            "CubeBeatz Error",
+            L"No MP3 or WAV files were found in the Music folder.",
+            L"CubeBeatz Music Error",
             MB_OK | MB_ICONERROR
         );
 
@@ -1252,7 +1422,11 @@ int WINAPI WinMain(
         return 1;
     }
 
-    musicStarted = true;
+    // Create the song selection menu.
+    CreateSongSelectionMenu(hwnd);
+
+    // Display the application window.
+    ShowWindow(hwnd, nCmdShow);
 
     //stores message recieved from windows
     MSG msg = {};
