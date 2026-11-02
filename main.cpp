@@ -84,6 +84,15 @@ std::chrono::steady_clock::time_point gameStartTime;
 // Tracks whether the music has started.
 bool musicStarted = false;
 
+// Tracks the visual lead-in before the music begins.
+bool leadInActive = false;
+
+// Tracks whether the game is paused.
+bool gamePaused = false;
+
+// Records when the game was paused.
+std::chrono::steady_clock::time_point pauseStartTime;
+
 // Preparation countdown before gameplay begins.
 const double PREPARATION_TIME = 15.0;
 double countdownStartTime = 0.0;
@@ -948,7 +957,7 @@ void RenderFrame(HWND hwnd)
             lastCountdownDisplayed = remainingTime;
         }
 
-        // Start the music after the countdown finishes.
+        // Begin the visual lead-in after the countdown finishes.
         if (elapsedTime >= PREPARATION_TIME)
         {
             countdownActive = false;
@@ -956,86 +965,121 @@ void RenderFrame(HWND hwnd)
             // Hide the countdown label.
             ShowWindow(countdownLabel, SW_HIDE);
 
-            // Start the selected song.
-            PlayMusic();
+            // Start the visual lead-in timer.
+            gameStartTime = std::chrono::steady_clock::now();
 
-            // Allow gameplay to begin.
-            musicStarted = true;
+            // Allow cubes to begin moving before the music.
+            leadInActive = true;
+
+            // Music will start after the lead-in.
+            musicStarted = false;
         }
     }
 
     // Only process notes after the music has started.
-    if (musicStarted)
+    // Process notes during the visual lead-in and music playback.
+    if (leadInActive || musicStarted)
     {
-        // Get the current position of the music.
-        double musicTime = GetMusicPosition();
-
-        // Spawn notes when their scheduled travel time begins.
-        while (nextNoteToSpawn < static_cast<int>(noteChart.size()) &&
-            musicTime >= noteChart[nextNoteToSpawn].hitTime - NOTE_TRAVEL_TIME)
+        if (!gamePaused)
         {
-            // Add the next chart note to the active notes list.
-            ActiveNote newNote;
+            // Determine the current note timeline position.
+            double musicTime = 0.0;
 
-            newNote.hitTime = noteChart[nextNoteToSpawn].hitTime;
-            newNote.lane = noteChart[nextNoteToSpawn].lane;
-            newNote.positionZ = NOTE_START_Z;
-            newNote.hit = false;
-            newNote.missed = false;
-
-            activeNotes.push_back(newNote);
-
-            // Move to the next note in the chart.
-            nextNoteToSpawn++;
-        }
-
-        // Update the position of every active note.
-        for (auto& note : activeNotes)
-        {
-            note.positionZ = NOTE_HIT_Z +
-                static_cast<float>(note.hitTime - musicTime) * NOTE_SPEED;
-        }
-
-        // Check every active note for a miss.
-        for (auto& note : activeNotes)
-        {
-            // Ignore notes that have already been hit or missed.
-            if (note.hit || note.missed)
-                continue;
-
-            // Check whether the note has passed the miss boundary.
-            if (note.positionZ < -0.15f)
+            if (leadInActive)
             {
-                note.missed = true;
+                // Measure how long the visual lead-in has been running.
+                double leadInElapsed =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - gameStartTime
+                    ).count();
 
-                // Record the miss and reset the combo.
-                missCount++;
-                combo = 0;
-                multiplier = 1;
+                // Keep the note timeline ahead of the music.
+                musicTime = leadInElapsed - NOTE_TRAVEL_TIME;
 
-                // Update the window title with the current statistics.
-                wchar_t title[150];
+                // Start the music once the lead-in finishes.
+                if (leadInElapsed >= NOTE_TRAVEL_TIME)
+                {
+                    PlayMusic();
 
-                wsprintf(title,
-                    L"CubeBeatz - Score: %d | Combo: %d | Misses: %d",
-                    score, combo, missCount);
+                    musicStarted = true;
+                    leadInActive = false;
 
-                SetWindowText(hwnd, title);
+                    // Synchronize the timeline with actual music playback.
+                    musicTime = GetMusicPosition();
+                }
+            }
+            else
+            {
+                // Follow the actual music playback position.
+                musicTime = GetMusicPosition();
+            }
+
+            // Spawn notes when their scheduled travel time begins.
+            while (nextNoteToSpawn < static_cast<int>(noteChart.size()) &&
+                musicTime >= noteChart[nextNoteToSpawn].hitTime - NOTE_TRAVEL_TIME)
+            {
+                // Add the next chart note to the active notes list.
+                ActiveNote newNote;
+
+                newNote.hitTime = noteChart[nextNoteToSpawn].hitTime;
+                newNote.lane = noteChart[nextNoteToSpawn].lane;
+                newNote.positionZ = NOTE_START_Z;
+                newNote.hit = false;
+                newNote.missed = false;
+
+                activeNotes.push_back(newNote);
+
+                // Move to the next note in the chart.
+                nextNoteToSpawn++;
+            }
+
+            // Update the position of every active note.
+            for (auto& note : activeNotes)
+            {
+                note.positionZ = NOTE_HIT_Z +
+                    static_cast<float>(note.hitTime - musicTime) * NOTE_SPEED;
+            }
+
+            // Check every active note for a miss.
+            for (auto& note : activeNotes)
+            {
+                // Ignore notes that have already been hit or missed.
+                if (note.hit || note.missed)
+                    continue;
+
+                // Check whether the note has passed the miss boundary.
+                if (note.positionZ < -0.15f)
+                {
+                    note.missed = true;
+
+                    // Record the miss and reset the combo.
+                    missCount++;
+                    combo = 0;
+                    multiplier = 1;
+
+                    // Update the window title with the current statistics.
+                    wchar_t title[150];
+
+                    wsprintf(title,
+                        L"CubeBeatz - Score: %d | Combo: %d | Misses: %d",
+                        score, combo, missCount);
+
+                    SetWindowText(hwnd, title);
+                }
+            }
+
+            // Remove notes that have already been hit or missed
+        // and have traveled far enough down the track.
+            for (int i = static_cast<int>(activeNotes.size()) - 1; i >= 0; --i)
+            {
+                if ((activeNotes[i].hit || activeNotes[i].missed) &&
+                    activeNotes[i].positionZ < -1.5f)
+                {
+                    // Remove this completed note from the active notes list.
+                    activeNotes.erase(activeNotes.begin() + i);
+                }
             }
         }
-
-        // Remove notes that have already been hit or missed
-    // and have traveled far enough down the track.
-        for (int i = static_cast<int>(activeNotes.size()) - 1; i >= 0; --i)
-        {
-            if ((activeNotes[i].hit || activeNotes[i].missed) &&
-                activeNotes[i].positionZ < -1.5f)
-            {
-                // Remove this completed note from the active notes list.
-                activeNotes.erase(activeNotes.begin() + i);
-            }
-        }
-
 
         // Render every active note currently on the track.
         for (const auto& note : activeNotes)
@@ -1198,6 +1242,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             // Music has not started yet.
             musicStarted = false;
 
+            // The visual lead-in has not started yet.
+            leadInActive = false;
+
+            // Reset the pause state for the new song.
+            gamePaused = false;
+
             // Switch to the gameplay screen.
             currentGameState = GameState::GAMEPLAY;
 
@@ -1217,6 +1267,57 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     case WM_KEYDOWN:
     {
+        // Spacebar pauses and resumes the game.
+        if (wParam == VK_SPACE)
+        {
+            // Ignore auto-repeat when Space is held down.
+            if ((lParam & (1LL << 30)) == 0 &&
+                currentGameState == GameState::GAMEPLAY &&
+                (musicStarted || leadInActive))
+            {
+                if (!gamePaused)
+                {
+                    // Pause the game.
+                    gamePaused = true;
+                    pauseStartTime = std::chrono::steady_clock::now();
+
+                    if (musicStarted)
+                    {
+                        PauseMusic();
+                    }
+
+                    SetWindowText(hwnd, L"CubeBeatz - PAUSED");
+                }
+                else
+                {
+                    // Calculate how long the game was paused.
+                    auto pauseDuration =
+                        std::chrono::steady_clock::now() - pauseStartTime;
+
+                    // Shift the lead-in timer so it doesn't advance while paused.
+                    if (leadInActive)
+                    {
+                        gameStartTime += pauseDuration;
+                    }
+
+                    // Resume the music if it had started.
+                    if (musicStarted)
+                    {
+                        ResumeMusic();
+                    }
+
+                    gamePaused = false;
+
+                    SetWindowText(hwnd, L"CubeBeatz - Playing");
+                }
+            }
+
+            return 0;
+        }
+        // Ignore gameplay input while paused.
+        if (gamePaused)
+            return 0;
+
         // Ignore gameplay input until the music begins.
         if (!musicStarted)
             return 0;

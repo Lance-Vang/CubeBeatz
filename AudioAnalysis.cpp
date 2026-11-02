@@ -358,8 +358,9 @@ bool AnalyzeMusic(
         // Get the next spectral flux value.
         float nextFlux = spectralFlux[i + 1];
 
-        // Calculate the average flux from recent previous windows.
+        // Calculate recent average flux and variation.
         double recentFlux = 0.0;
+        double recentFluxSquared = 0.0;
         size_t samplesUsed = 0;
 
         size_t start = (i > analysisWindow)
@@ -369,6 +370,9 @@ bool AnalyzeMusic(
         for (size_t j = start; j < i; j++)
         {
             recentFlux += spectralFlux[j];
+            recentFluxSquared +=
+                spectralFlux[j] * spectralFlux[j];
+
             samplesUsed++;
         }
 
@@ -385,9 +389,29 @@ bool AnalyzeMusic(
             currentFlux > previousFlux &&
             currentFlux >= nextFlux;
 
-        // Require the peak to stand out from recent activity.
+        // Calculate how much recent audio activity varies.
+        double variance = 0.0;
+
+        if (samplesUsed > 0)
+        {
+            variance =
+                (recentFluxSquared / samplesUsed) -
+                (averageRecentFlux * averageRecentFlux);
+        }
+
+        // Prevent tiny negative values caused by floating-point rounding.
+        variance = std::max(0.0, variance);
+
+        float standardDeviation =
+            static_cast<float>(std::sqrt(variance));
+
+        // Require the peak to exceed the recent average
+        // by a margin based on recent audio variation.
+        float adaptiveThreshold =
+            averageRecentFlux + (1.5f * standardDeviation);
+
         bool isStrongPeak =
-            currentFlux > averageRecentFlux * 1.5f;
+            currentFlux > adaptiveThreshold;
 
         // Only generate notes for strong spectral flux peaks.
         if (isPeak && isStrongPeak && currentFlux > 0.0f)
