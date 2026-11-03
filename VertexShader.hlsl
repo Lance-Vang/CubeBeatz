@@ -5,6 +5,9 @@ cbuffer ObjectSettings : register(b0)
     float cubePositionZ;
     float cubePositionX;
     float padding;
+
+    float cubeLength;
+    float3 extraPadding;
 };
 
 struct VertexOutput
@@ -33,11 +36,14 @@ VertexOutput main(float4 pos : POSITION)
             z *= 1.12f;
         }
 
+        // Stretch the note along the Z-axis.
+        z *= cubeLength;
+
         // Lower the cube so it sits on the track.
         y -= 0.4f;
 
-        // Rotate the cube around its own center.
-        float angleY = 0.65f;
+        // Keep tap notes rotated, but align long hold notes with their lane.
+        float angleY = (cubeLength > 1.0f) ? 0.0f : 0.65f;
 
         float cosineY = cos(angleY);
         float sineY = sin(angleY);

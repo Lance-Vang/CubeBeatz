@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <vector>
 #include <cmath>
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <commdlg.h>
@@ -46,6 +47,10 @@ struct ObjectSettings
     float cubePositionZ;
     float cubePositionX;
     float padding;
+
+    // Controls the length of a rhythm note.
+    float cubeLength;
+    float extraPadding[3];
 };
 
 // Sends object settings to the GPU.
@@ -61,16 +66,25 @@ const double NOTE_TRAVEL_TIME =(NOTE_START_Z - NOTE_HIT_Z) / NOTE_SPEED;
 // Stores an individual note currently active in the game.
 struct ActiveNote
 {
-    double hitTime;  // Scheduled time to hit the note.
-    int lane;        // Lane where the note appears.
-    float positionZ; // Current position along the track.
+    double hitTime;
+    int lane;
+    float positionZ;
 
-    bool hit;        // Whether the player successfully hit it.
-    bool missed;     // Whether the player missed it.
+    NoteType type;
+    double duration;
+
+    bool hit;
+    bool missed;
+
+    // Hold-note input tracking.
+    bool holding;
 };
 
 // Stores all notes currently active on the track.
 std::vector<ActiveNote> activeNotes;
+
+// Tracks whether each of the six lane keys is currently pressed.
+bool laneKeyDown[6] = {};
 
 // Tracks the next note in the chart that needs to spawn.
 int nextNoteToSpawn = 0;
@@ -785,6 +799,9 @@ bool CreateObjectSettingsBuffer()
     ObjectSettings settings = {};
     settings.rotateObject = 1;
 
+    // Keep the default cube length at its normal size.
+    settings.cubeLength = 1.0f;
+
     D3D11_SUBRESOURCE_DATA initialData = {};
     initialData.pSysMem = &settings;
 
@@ -942,6 +959,43 @@ void Cleanup()
     }
 }
 
+void RegisterSuccessfulHit(HWND hwnd, int basePoints, const wchar_t* judgment)
+{
+    hitCount++;
+    combo++;
+
+    if (combo > maxCombo)
+        maxCombo = combo;
+
+    if (combo >= 30)
+        multiplier = 5;
+    else if (combo >= 20)
+        multiplier = 4;
+    else if (combo >= 10)
+        multiplier = 3;
+    else if (combo >= 5)
+        multiplier = 2;
+    else
+        multiplier = 1;
+    score += basePoints * multiplier;
+
+    SetWindowText(judgmentLabel, judgment);
+    ShowWindow(judgmentLabel, SW_SHOW);
+
+    // Update the HUD.
+    SetWindowText(scoreLabel,
+        (L"Score: " + std::to_wstring(score)).c_str());
+
+    SetWindowText(comboLabel,
+        (L"Combo: " + std::to_wstring(combo)).c_str());
+
+    // Update the game window title.
+    std::wstring title =
+        L"CubeBeatz | Score: " + std::to_wstring(score) +
+        L" | Combo: " + std::to_wstring(combo);
+
+    SetWindowText(hwnd, title.c_str());
+}
 
 //A Dark background color: 
 void RenderFrame(HWND hwnd)
@@ -1076,8 +1130,14 @@ void RenderFrame(HWND hwnd)
                 newNote.hitTime = noteChart[nextNoteToSpawn].hitTime;
                 newNote.lane = noteChart[nextNoteToSpawn].lane;
                 newNote.positionZ = NOTE_START_Z;
+
+                // Copy the note type and duration from the generated chart.
+                newNote.type = noteChart[nextNoteToSpawn].type;
+                newNote.duration = noteChart[nextNoteToSpawn].duration;
+
                 newNote.hit = false;
                 newNote.missed = false;
+                newNote.holding = false;
 
                 activeNotes.push_back(newNote);
 
@@ -1096,7 +1156,7 @@ void RenderFrame(HWND hwnd)
             for (auto& note : activeNotes)
             {
                 // Ignore notes that have already been hit or missed.
-                if (note.hit || note.missed)
+                if (note.hit || note.missed || note.holding)
                     continue;
 
                 // Check whether the note has passed the miss boundary.
@@ -1127,9 +1187,41 @@ void RenderFrame(HWND hwnd)
                     SetWindowText(hwnd, title);
                 }
             }
+            // Check whether any active hold notes have reached their end time.
+            for (auto& note : activeNotes)
+            {
+                // Only process hold notes that the player is currently holding.
+                if (!note.holding)
+                    continue;
 
-            // Remove notes that have already been hit or missed
-        // and have traveled far enough down the track.
+                // Make sure the player is still holding the correct lane key.
+                if (!laneKeyDown[note.lane])
+                    continue;
+
+                // Calculate when the hold note should finish.
+                double holdEndTime = note.hitTime + note.duration;
+
+                // Complete the hold when its full duration has elapsed.
+                if (musicTime >= holdEndTime)
+                {
+                    note.holding = false;
+                    note.hit = true;
+
+                    // Calculate the hold's base score using its duration.
+                    int holdPoints = 500 +
+                        static_cast<int>(std::lround(note.duration * 250.0));
+
+                    // Award points for successfully completing the hold.
+                    RegisterSuccessfulHit(
+                        hwnd,
+                        holdPoints,
+                        L"HOLD COMPLETE!"
+                    );
+                }
+            }
+
+             // Remove notes that have already been hit or missed
+            // and have traveled far enough down the track.
             for (int i = static_cast<int>(activeNotes.size()) - 1; i >= 0; --i)
             {
                 if ((activeNotes[i].hit || activeNotes[i].missed) &&
@@ -1151,6 +1243,29 @@ void RenderFrame(HWND hwnd)
 
             // Calculate the horizontal position using the note's lane.
             settings.cubePositionX = -1.5f + (note.lane * 0.6f);
+
+            // Calculate the length and position of the note.
+            if (note.type == NoteType::HOLD)
+            {
+                // Convert the hold duration into a world-space length.
+                float holdLength = static_cast<float>(
+                    note.duration * NOTE_SPEED
+                    );
+
+                // The original cube is 0.30 units long along its Z-axis.
+                settings.cubeLength = holdLength / 0.30f;
+
+                // Move the center forward so the beginning of the hold
+                // reaches the hit line at the correct time.
+                settings.cubePositionZ =
+                    note.positionZ + (holdLength / 2.0f);
+            }
+            else
+            {
+                // Tap notes keep their normal cube size and position.
+                settings.cubeLength = 1.0f;
+                settings.cubePositionZ = note.positionZ;
+            }
 
             // Determine whether this note is inside a timing zone.
             bool perfectZone =
@@ -1205,6 +1320,7 @@ void RenderFrame(HWND hwnd)
     settings.cubePositionZ = 0.0f;
     settings.cubePositionX = 0.0f;
     settings.padding = 0.0f;
+    settings.cubeLength = 1.0f;
 
     // Tell the shaders not to apply the cube's Y rotation.
     deviceContext->UpdateSubresource(
@@ -1285,6 +1401,43 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return 0;
             }
 
+            // TEMPORARY TEST: Add a 2-second hold note.
+            Note testHoldNote;
+
+            testHoldNote.hitTime = 8.0;
+            testHoldNote.lane = 2;
+            testHoldNote.type = NoteType::HOLD;
+            testHoldNote.duration = 2.0;
+
+            // Remove automatically generated notes that would overlap
+            // with the temporary hold in the same lane.
+            noteChart.erase(
+                std::remove_if(
+                    noteChart.begin(),
+                    noteChart.end(),
+                    [](const Note& note)
+                    {
+                        return note.lane == 2 &&
+                            note.hitTime >= 8.0 &&
+                            note.hitTime <= 10.0;
+                    }
+                ),
+                noteChart.end()
+            );
+
+            // Add the test hold note to the chart.
+            noteChart.push_back(testHoldNote);
+
+            // Keep all notes in chronological order.
+            std::sort(
+                noteChart.begin(),
+                noteChart.end(),
+                [](const Note& a, const Note& b)
+                {
+                    return a.hitTime < b.hitTime;
+                }
+            );
+
             // Reset gameplay information for the new song.
             activeNotes.clear();
             nextNoteToSpawn = 0;
@@ -1294,6 +1447,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             maxCombo = 0;
             multiplier = 1;
             missCount = 0;
+
+            // Reset all lane-key states for the new song.
+            for (int i = 0; i < 6; i++)
+            {
+                laneKeyDown[i] = false;
+            }
 
             // Begin the 15-second preparation countdown.
             countdownStartTime = GetTickCount64() / 1000.0;
@@ -1412,7 +1571,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         else if (wParam == 'L')
             pressedLane = 5;
 
-        // Check active notes to find one that matches the pressed lane.
+        // Ignore keys that are not part of the six lanes.
+        if (pressedLane == -1)
+            return 0;
+
+        // Ignore repeated keydown messages while the key is already held.
+        if (laneKeyDown[pressedLane])
+            return 0;
+
+        // Record that this lane key is currently pressed.
+        laneKeyDown[pressedLane] = true;
+
+        // Find the closest active note in the pressed lane.
         int closestNoteIndex = -1;
         float closestDistance = 999.0f;
 
@@ -1420,8 +1590,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             ActiveNote& note = activeNotes[i];
 
-            // Ignore notes that have already been hit or missed.
-            if (note.hit || note.missed)
+            // Ignore notes that have already been hit, missed, or started.
+            if (note.hit || note.missed || note.holding)
                 continue;
 
             // Check whether the note belongs to the pressed lane.
@@ -1443,78 +1613,85 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
         }
 
-        // Award points if a matching note was found.
+        // Process the matching note.
         if (closestNoteIndex != -1)
         {
-            // Mark the note as successfully hit.
-            activeNotes[closestNoteIndex].hit = true;
+            ActiveNote& note = activeNotes[closestNoteIndex];
 
-            // Store the timing judgment.
-            const wchar_t* judgment;
-
-            int basePoints = 0;
-
-            // Perfect: very close to the hit line.
-            if (closestDistance <= 0.12f)
+            // Hold notes must remain active until their duration finishes.
+            if (note.type == NoteType::HOLD)
             {
-                judgment = L"PERFECT!";
-                basePoints = 500;
+                note.holding = true;
+
+                // Display feedback that the hold has started.
+                SetWindowText(judgmentLabel, L"HOLD!");
+                ShowWindow(judgmentLabel, SW_SHOW);
             }
-            // Good: inside the wider hit window.
             else
             {
-                judgment = L"GOOD!";
-                basePoints = 300;
+                // Tap notes are completed immediately.
+                note.hit = true;
+
+                if (std::abs(note.positionZ) <= 0.15f)
+                {
+                    RegisterSuccessfulHit(hwnd, 500, L"PERFECT!");
+                }
+                else
+                {
+                    RegisterSuccessfulHit(hwnd, 300, L"GOOD!");
+                }
+
             }
-
-            // Increase the successful hit count and combo.
-            hitCount++;
-            combo++;
-
-            // Determine the multiplier based on the updated combo.
-            if (combo >= 30)
-                multiplier = 5;
-            else if (combo >= 20)
-                multiplier = 4;
-            else if (combo >= 10)
-                multiplier = 3;
-            else if (combo >= 5)
-                multiplier = 2;
-            else
-                multiplier = 1;
-
-            // Apply the multiplier to the points earned.
-            score += basePoints * multiplier;
-
-            // Display the latest hit judgment on the HUD.
-            SetWindowText(judgmentLabel, judgment);
-            ShowWindow(judgmentLabel, SW_SHOW);
-
-            // Update the highest combo if necessary.
-            if (combo > maxCombo)
-            {
-                maxCombo = combo;
-            }
-
-            // Update the score and combo displayed on the HUD.
-            wchar_t scoreText[50];
-            wchar_t comboText[50];
-
-            wsprintf(scoreText, L"Score: %d", score);
-            wsprintf(comboText, L"Combo: %d", combo);
-
-            SetWindowText(scoreLabel, scoreText);
-            SetWindowText(comboLabel, comboText);
-
-            // Display the judgment and current statistics.
-            wchar_t title[200];
-
-            wsprintf(title,
-                L"CubeBeatz - %s | Score: %d | Combo: %d",
-                judgment, score, combo);
-
-            SetWindowText(hwnd, title);
         }
+
+        return 0;
+    }
+
+    case WM_KEYUP:
+    {
+        int releasedLane = -1;
+
+        // Identify which lane key was released.
+        switch (wParam)
+        {
+        case 'S': releasedLane = 0; break;
+        case 'D': releasedLane = 1; break;
+        case 'F': releasedLane = 2; break;
+        case 'J': releasedLane = 3; break;
+        case 'K': releasedLane = 4; break;
+        case 'L': releasedLane = 5; break;
+        }
+
+        // Ignore keys that aren't part of the six lanes.
+        if (releasedLane == -1)
+            return 0;
+
+        // Mark the lane key as released.
+        laneKeyDown[releasedLane] = false;
+
+        // Check whether this key was being used to hold a note.
+        for (auto& note : activeNotes)
+        {
+            if (!note.holding || note.lane != releasedLane)
+                continue;
+
+            // Releasing before the hold duration ends causes a miss.
+            note.holding = false;
+            note.missed = true;
+
+            missCount++;
+            combo = 0;
+            multiplier = 1;
+
+            SetWindowText(missLabel, L"MISS!");
+            ShowWindow(missLabel, SW_SHOW);
+
+            SetWindowText(comboLabel, L"Combo: 0");
+            SetWindowText(hwnd, L"CubeBeatz - Miss!");
+
+            break;
+        }
+
         return 0;
     }
 

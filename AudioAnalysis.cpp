@@ -1,10 +1,9 @@
 // AudioAnalysis.cpp
 // Handles analyzing music and generating a note chart for CubeBeatz.
 
+#define NOMINMAX
 #include "AudioAnalysis.h"
 #include "./miniaudio.h"
-
-#define NOMINMAX
 #include <windows.h>
 #include <vector>
 #include <cmath>
@@ -346,6 +345,15 @@ bool AnalyzeMusic(
     // Remembers the previous lane.
     int previousLane = -1;
 
+    // Stores when each lane becomes available again.
+    double laneAvailableTime[6] = {};
+
+    // Prevents hold notes from appearing too frequently.
+    double lastHoldNoteTime = -5.0;
+
+    // Minimum time between generated hold notes.
+    const double holdNoteCooldown = 5.0;
+
     // Examine spectral flux values for local peaks.
     for (size_t i = 1; i + 1 < spectralFlux.size(); i++)
     {
@@ -489,8 +497,100 @@ bool AnalyzeMusic(
                         (frequencyRange * 2) + lanePairDistribution(randomGenerator);
                 }
 
-                // Add the note to the selected lane.
-                generatedNotes.push_back({ noteTime, selectedLane });
+                // Estimate which audio-energy window matches this note.
+                double windowDuration =
+                    static_cast<double>(windowSize) / sampleRate;
+
+                size_t energyIndex = static_cast<size_t>(
+                    noteTime / windowDuration
+                    );
+
+                energyIndex = std::min(
+                    energyIndex,
+                    audioEnergy.size() - 1
+                );
+
+                // Start with a normal tap note.
+                Note newNote{};
+                newNote.hitTime = noteTime;
+                newNote.lane = selectedLane;
+                newNote.type = NoteType::TAP;
+                newNote.duration = 0.0;
+
+                // Measure the energy at the note's starting point.
+                float startingEnergy = audioEnergy[energyIndex];
+
+                // Look ahead to see whether the sound remains sustained.
+                if (startingEnergy > 0.00001f)
+                {
+                    size_t sustainedWindows = 0;
+
+                    // Look ahead for up to 2.5 seconds.
+                    size_t maximumWindows = static_cast<size_t>(
+                        2.5 / windowDuration
+                        );
+
+                    for (size_t offset = 1;
+                        offset <= maximumWindows &&
+                        energyIndex + offset < audioEnergy.size();
+                        offset++)
+                    {
+                        float currentEnergy =
+                            audioEnergy[energyIndex + offset];
+
+                        // Stop when the energy drops below 50% of its starting level.
+                        if (currentEnergy < startingEnergy * 0.50f)
+                            break;
+
+                        sustainedWindows++;
+                    }
+
+                    // Only create a hold when the sound remains sustained
+                    // for at least 2.0 seconds.
+                    double sustainedDuration =
+                        sustainedWindows * windowDuration;
+
+                    if (sustainedDuration >= 2.0 &&
+                        noteTime - lastHoldNoteTime >= holdNoteCooldown)
+                    {
+                        newNote.type = NoteType::HOLD;
+
+                        // Keep hold durations between 0.8 and 2.5 seconds.
+                        newNote.duration = std::min(
+                            2.5,
+                            sustainedDuration
+                        );
+
+                        // Remember when this hold note was generated.
+                        lastHoldNoteTime = noteTime;
+                    }
+                }
+
+                // Check whether the selected lane is available.
+                if (noteTime < laneAvailableTime[selectedLane])
+                {
+                    // Try the other lane in the same frequency range.
+                    int alternateLane =
+                        (selectedLane % 2 == 0)
+                        ? selectedLane + 1
+                        : selectedLane - 1;
+
+                    if (noteTime < laneAvailableTime[alternateLane])
+                    {
+                        // Both lanes are occupied, so skip this note.
+                        continue;
+                    }
+
+                    selectedLane = alternateLane;
+                    newNote.lane = selectedLane;
+                }
+
+                // Add the generated tap or hold note.
+                generatedNotes.push_back(newNote);
+
+                // Reserve the lane until the note finishes.
+                laneAvailableTime[selectedLane] =
+                    noteTime + newNote.duration + minimumNoteSpacing;
 
                 // Remember the selected lane.
                 previousLane = selectedLane;

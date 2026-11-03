@@ -5,6 +5,9 @@ cbuffer ObjectSettings : register(b0)
     float cubePositionZ;
     float cubePositionX;
     float padding;
+
+    float cubeLength;
+    float3 extraPadding;
 };
 
 struct PixelInput
