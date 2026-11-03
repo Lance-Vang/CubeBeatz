@@ -263,6 +263,18 @@ HWND playButton = nullptr;
 // Displays the preparation countdown before the song begins.
 HWND countdownLabel = nullptr;
 
+// Displays the player's current score.
+HWND scoreLabel = nullptr;
+
+// Displays the player's current combo.
+HWND comboLabel = nullptr;
+
+// Displays the number of missed notes.
+HWND missLabel = nullptr;
+
+// Displays the latest hit judgment.
+HWND judgmentLabel = nullptr;
+
 // Tracks the last countdown number displayed.
 int lastCountdownDisplayed = -1;
 
@@ -520,6 +532,46 @@ void CreateSongSelectionMenu(HWND hwnd)
         nullptr,
         GetModuleHandle(nullptr),
         nullptr
+    );
+}
+
+// Creates the gameplay HUD inside the game window.
+void CreateHUD(HWND hwnd)
+{
+    // Displays the player's score.
+    scoreLabel = CreateWindowEx(
+        0, L"STATIC", L"Score: 0",
+        WS_CHILD | SS_CENTER,
+        20, 20, 200, 35,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Displays the player's combo.
+    comboLabel = CreateWindowEx(
+        0, L"STATIC", L"Combo: 0",
+        WS_CHILD | SS_CENTER,
+        220, 20, 200, 35,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Displays the player's misses.
+    missLabel = CreateWindowEx(
+        0, L"STATIC", L"Misses: 0",
+        WS_CHILD | SS_CENTER,
+        420, 20, 200, 35,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Displays Perfect and Good judgments.
+    judgmentLabel = CreateWindowEx(
+        0, L"STATIC", L"",
+        WS_CHILD | SS_CENTER,
+        440, 75, 400, 60,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
     );
 }
 
@@ -1057,6 +1109,14 @@ void RenderFrame(HWND hwnd)
                     combo = 0;
                     multiplier = 1;
 
+                    // Update the miss counter displayed on the HUD.
+                    wchar_t missText[50];
+                    wsprintf(missText, L"Misses: %d", missCount);
+                    SetWindowText(missLabel, missText);
+
+                    // Update the combo displayed on the HUD after a miss.
+                    SetWindowText(comboLabel, L"Combo: 0");
+
                     // Update the window title with the current statistics.
                     wchar_t title[150];
 
@@ -1255,6 +1315,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             ShowWindow(songListBox, SW_HIDE);
             ShowWindow(playButton, SW_HIDE);
 
+            // Reset the HUD values for the new song.
+            SetWindowText(scoreLabel, L"Score: 0");
+            SetWindowText(comboLabel, L"Combo: 0");
+            SetWindowText(missLabel, L"Misses: 0");
+            SetWindowText(judgmentLabel, L"");
+
+            // Show the gameplay HUD.
+            ShowWindow(scoreLabel, SW_SHOW);
+            ShowWindow(comboLabel, SW_SHOW);
+            ShowWindow(missLabel, SW_SHOW);
+
+            // Keep the judgment hidden until the player hits a note.
+            ShowWindow(judgmentLabel, SW_HIDE);
+
             // Show the preparation countdown.
             ShowWindow(countdownLabel, SW_SHOW);
             SetWindowText(countdownLabel, L"Get Ready!");
@@ -1412,11 +1486,25 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             // Apply the multiplier to the points earned.
             score += basePoints * multiplier;
 
+            // Display the latest hit judgment on the HUD.
+            SetWindowText(judgmentLabel, judgment);
+            ShowWindow(judgmentLabel, SW_SHOW);
+
             // Update the highest combo if necessary.
             if (combo > maxCombo)
             {
                 maxCombo = combo;
             }
+
+            // Update the score and combo displayed on the HUD.
+            wchar_t scoreText[50];
+            wchar_t comboText[50];
+
+            wsprintf(scoreText, L"Score: %d", score);
+            wsprintf(comboText, L"Combo: %d", combo);
+
+            SetWindowText(scoreLabel, scoreText);
+            SetWindowText(comboLabel, comboText);
 
             // Display the judgment and current statistics.
             wchar_t title[200];
@@ -1590,6 +1678,9 @@ int WINAPI WinMain(
 
     // Create the song selection menu.
     CreateSongSelectionMenu(hwnd);
+
+    // Create the gameplay HUD.
+    CreateHUD(hwnd);
 
     // Display the application window.
     ShowWindow(hwnd, nCmdShow);
