@@ -20,6 +20,7 @@
 #include "AudioManager.h"
 #include "AudioAnalysis.h"
 
+
 // Links the Direct3D and DXGI Libraries 
 #pragma comment(lib, "d3d11.lib")  
 #pragma comment(lib, "dxgi.lib") 
@@ -48,9 +49,15 @@ struct ObjectSettings
     float cubePositionX;
     float padding;
 
-    // Controls the length of a rhythm note.
     float cubeLength;
     float extraPadding[3];
+
+    // Keyboard illumination states for the six lanes.
+    float lanePressed[4];
+    float lanePressedLastTwo[2];
+
+    // Padding to keep the constant buffer 16-byte aligned.
+    float extraPadding2[2];
 };
 
 // Sends object settings to the GPU.
@@ -98,6 +105,15 @@ std::chrono::steady_clock::time_point gameStartTime;
 // Tracks whether the music has started.
 bool musicStarted = false;
 
+// Tracks whether the audio has finished playing.
+bool musicFinished = false;
+
+// Records when the audio playback reaches its end.
+std::chrono::steady_clock::time_point musicFinishedTime;
+
+// Stores the final playback position of the song.
+double finalMusicPosition = 0.0;
+
 // Tracks the visual lead-in before the music begins.
 bool leadInActive = false;
 
@@ -108,7 +124,7 @@ bool gamePaused = false;
 std::chrono::steady_clock::time_point pauseStartTime;
 
 // Preparation countdown before gameplay begins.
-const double PREPARATION_TIME = 15.0;
+const double PREPARATION_TIME = 10.0;
 double countdownStartTime = 0.0;
 bool countdownActive = false;
 
@@ -116,7 +132,8 @@ bool countdownActive = false;
 enum class GameState
 {
     SONG_SELECT,
-    GAMEPLAY
+    GAMEPLAY,
+    RESULTS
 };
 
 // Start the game on the song selection screen.
@@ -150,6 +167,13 @@ ID3D11Buffer* indexBuffer = nullptr;
 ID3D11Buffer* trackVertexBuffer = nullptr;
 ID3D11Buffer* trackIndexBuffer = nullptr;
 
+// Buffers used to render the six keyboard labels.
+ID3D11Buffer* labelVertexBuffer = nullptr;
+ID3D11Buffer* labelIndexBuffer = nullptr;
+
+// Stores the number of indices used by the lane labels.
+unsigned int labelIndexCount = 0;
+
 // Describes how Direct3D reads the cube's vertex data.
 ID3D11InputLayout* inputLayout = nullptr;
 
@@ -167,13 +191,17 @@ struct Vertex {
     float x, y, z; 
 };
 
+// Stores the generated geometry for the six keyboard labels.
+std::vector<Vertex> labelVertices;
+std::vector<unsigned int> labelIndices;
+
 // Six lane track vertices
 Vertex trackVertices[] =
 {
     {-1.8f, -0.6f, -0.2f},
     { 1.8f, -0.6f, -0.2f},
-    {-1.8f, -0.6f,  8.0f},
-    { 1.8f, -0.6f,  8.0f}
+    {-1.8f, -0.6f,  12.0f},
+    { 1.8f, -0.6f,  12.0f}
 };
 
 unsigned int trackIndices[] = {
@@ -288,6 +316,26 @@ HWND missLabel = nullptr;
 
 // Displays the latest hit judgment.
 HWND judgmentLabel = nullptr;
+
+// Displays a pause message while the game is paused.
+HWND pauseLabel = nullptr;
+
+// Results screen text controls.
+HWND resultsTitleLabel = nullptr;
+HWND resultsScoreLabel = nullptr;
+HWND resultsAccuracyLabel = nullptr;
+HWND resultsComboLabel = nullptr;
+HWND resultsHitsLabel = nullptr;
+HWND resultsMissesLabel = nullptr;
+HWND resultsRankLabel = nullptr;
+
+// Results screen buttons.
+HWND replayButton = nullptr;
+HWND songSelectButton = nullptr;
+
+// Identifies the Results screen buttons.
+const int REPLAY_BUTTON_ID = 1003;
+const int SONG_SELECT_BUTTON_ID = 1004;
 
 // Tracks the last countdown number displayed.
 int lastCountdownDisplayed = -1;
@@ -456,7 +504,7 @@ void CreateSongSelectionMenu(HWND hwnd)
         L"LISTBOX",
         nullptr,
         WS_CHILD | WS_VISIBLE | WS_BORDER |
-        LBS_NOTIFY | WS_VSCROLL,
+        WS_TABSTOP | LBS_NOTIFY | WS_VSCROLL,
         400, 200, 450, 250,
         hwnd,
         (HMENU)SONG_LIST_ID,
@@ -587,6 +635,178 @@ void CreateHUD(HWND hwnd)
         hwnd, nullptr,
         GetModuleHandle(nullptr), nullptr
     );
+
+    // Displays a message when the game is paused.
+    pauseLabel = CreateWindowEx(
+        0, L"STATIC", L"PAUSED",
+        WS_CHILD | SS_CENTER,
+        440, 300, 400, 80,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+}
+
+// Creates the Results screen controls.
+void CreateResultsScreen(HWND hwnd)
+{
+    // Main Results heading.
+    resultsTitleLabel = CreateWindowEx(
+        0, L"STATIC", L"SONG RESULTS",
+        WS_CHILD | SS_CENTER,
+        440, 80, 400, 60,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Final score.
+    resultsScoreLabel = CreateWindowEx(
+        0, L"STATIC", L"Score: 0",
+        WS_CHILD | SS_CENTER,
+        440, 160, 400, 40,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Accuracy percentage.
+    resultsAccuracyLabel = CreateWindowEx(
+        0, L"STATIC", L"Accuracy: 0.00%",
+        WS_CHILD | SS_CENTER,
+        440, 210, 400, 35,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Highest combo achieved.
+    resultsComboLabel = CreateWindowEx(
+        0, L"STATIC", L"Max Combo: 0",
+        WS_CHILD | SS_CENTER,
+        440, 250, 400, 35,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Total successful hits.
+    resultsHitsLabel = CreateWindowEx(
+        0, L"STATIC", L"Notes Hit: 0",
+        WS_CHILD | SS_CENTER,
+        440, 290, 400, 35,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Total missed notes.
+    resultsMissesLabel = CreateWindowEx(
+        0, L"STATIC", L"Misses: 0",
+        WS_CHILD | SS_CENTER,
+        440, 330, 400, 35,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Final performance rank.
+    resultsRankLabel = CreateWindowEx(
+        0, L"STATIC", L"RANK: D",
+        WS_CHILD | SS_CENTER,
+        440, 385, 400, 55,
+        hwnd, nullptr,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Play the currently selected song again.
+    replayButton = CreateWindowEx(
+        0, L"BUTTON", L"Play Again",
+        WS_CHILD | BS_PUSHBUTTON,
+        430, 490, 180, 50,
+        hwnd,
+        (HMENU)REPLAY_BUTTON_ID,
+        GetModuleHandle(nullptr), nullptr
+    );
+
+    // Return to the song selection menu.
+    songSelectButton = CreateWindowEx(
+        0, L"BUTTON", L"Song Selection",
+        WS_CHILD | BS_PUSHBUTTON,
+        630, 490, 180, 50,
+        hwnd,
+        (HMENU)SONG_SELECT_BUTTON_ID,
+        GetModuleHandle(nullptr), nullptr
+    );
+}
+
+// Displays the player's final song results.
+void ShowResults(HWND hwnd)
+{
+    // Calculate the player's accuracy.
+    int totalNotes = hitCount + missCount;
+
+    double accuracy = 0.0;
+
+    if (totalNotes > 0)
+    {
+        accuracy = (static_cast<double>(hitCount) / totalNotes) * 100.0;
+    }
+
+    // Determine the player's final rank.
+    wchar_t rank = L'D';
+
+    if (accuracy >= 95.0)
+        rank = L'S';
+    else if (accuracy >= 90.0)
+        rank = L'A';
+    else if (accuracy >= 80.0)
+        rank = L'B';
+    else if (accuracy >= 70.0)
+        rank = L'C';
+
+    // Format the accuracy percentage.
+    wchar_t accuracyText[64];
+    swprintf_s(accuracyText, L"Accuracy: %.2f%%", accuracy);
+
+    // Update the Results screen labels.
+    SetWindowText(resultsScoreLabel,
+        (L"Score: " + std::to_wstring(score)).c_str());
+
+    SetWindowText(resultsAccuracyLabel, accuracyText);
+
+    SetWindowText(resultsComboLabel,
+        (L"Max Combo: " + std::to_wstring(maxCombo)).c_str());
+
+    SetWindowText(resultsHitsLabel,
+        (L"Notes Hit: " + std::to_wstring(hitCount)).c_str());
+
+    SetWindowText(resultsMissesLabel,
+        (L"Misses: " + std::to_wstring(missCount)).c_str());
+
+    wchar_t rankText[32];
+    swprintf_s(rankText, L"RANK: %c", rank);
+
+    SetWindowText(resultsRankLabel, rankText);
+
+    // Hide the gameplay HUD.
+    ShowWindow(scoreLabel, SW_HIDE);
+    ShowWindow(comboLabel, SW_HIDE);
+    ShowWindow(missLabel, SW_HIDE);
+    ShowWindow(judgmentLabel, SW_HIDE);
+    ShowWindow(pauseLabel, SW_HIDE);
+    ShowWindow(countdownLabel, SW_HIDE);
+
+    // Hide the song selection controls.
+    ShowWindow(songListBox, SW_HIDE);
+    ShowWindow(playButton, SW_HIDE);
+
+    // Display the Results screen.
+    ShowWindow(resultsTitleLabel, SW_SHOW);
+    ShowWindow(resultsScoreLabel, SW_SHOW);
+    ShowWindow(resultsAccuracyLabel, SW_SHOW);
+    ShowWindow(resultsComboLabel, SW_SHOW);
+    ShowWindow(resultsHitsLabel, SW_SHOW);
+    ShowWindow(resultsMissesLabel, SW_SHOW);
+    ShowWindow(resultsRankLabel, SW_SHOW);
+    ShowWindow(replayButton, SW_SHOW);
+    ShowWindow(songSelectButton, SW_SHOW);
+
+    // Update the window title.
+    SetWindowText(hwnd, L"CubeBeatz | Results");
 }
 
 
@@ -789,6 +1009,179 @@ bool CreateTrackBuffers() {
 }
 
 
+// Creates one rectangular stroke for a keyboard letter.
+void AddLabelStroke(
+    float centerX,
+    float centerZ,
+    float x1,
+    float z1,
+    float x2,
+    float z2)
+
+{
+    // Reduce the size of each letter while keeping it centered.
+    const float labelScale = 0.80f;
+
+    x1 *= labelScale;
+    z1 *= labelScale;
+    x2 *= labelScale;
+    z2 *= labelScale;
+
+    // Calculate the direction of the stroke.
+    float dx = x2 - x1;
+    float dz = z2 - z1;
+
+    float length = std::sqrt(dx * dx + dz * dz);
+
+    // Calculate a perpendicular offset for the stroke width.
+    float halfWidth = 0.0144f;
+
+    float px = (-dz / length) * halfWidth;
+    float pz = (dx / length) * halfWidth;
+
+    // Keep the letters slightly above the track surface.
+    float y = -0.575f;
+
+    unsigned int startIndex =
+        static_cast<unsigned int>(labelVertices.size());
+
+    // Create the four corners of the rectangular stroke.
+    labelVertices.push_back({
+        centerX + x1 + px, y, centerZ + z1 + pz
+        });
+
+    labelVertices.push_back({
+        centerX + x1 - px, y, centerZ + z1 - pz
+        });
+
+    labelVertices.push_back({
+        centerX + x2 + px, y, centerZ + z2 + pz
+        });
+
+    labelVertices.push_back({
+        centerX + x2 - px, y, centerZ + z2 - pz
+        });
+
+    // Create two triangles from the four corners.
+    labelIndices.push_back(startIndex);
+    labelIndices.push_back(startIndex + 1);
+    labelIndices.push_back(startIndex + 2);
+
+    labelIndices.push_back(startIndex + 2);
+    labelIndices.push_back(startIndex + 1);
+    labelIndices.push_back(startIndex + 3);
+}
+
+// Generates the letters S, D, F, J, K, and L.
+void BuildLaneLabelGeometry()
+{
+    // Clear any previously generated geometry.
+    labelVertices.clear();
+    labelIndices.clear();
+
+    // Center positions of the six lanes.
+    float laneCenters[6] =
+    {
+        -1.5f, -0.9f, -0.3f,
+         0.3f,  0.9f,  1.5f
+    };
+
+    // Position keyboard labels behind the yellow hit line,
+    // toward the player's end of the track.
+    const float labelZ = -0.08f;
+
+    // S
+    AddLabelStroke(laneCenters[0], labelZ, -0.12f, 0.15f, 0.12f, 0.15f);
+    AddLabelStroke(laneCenters[0], labelZ, -0.12f, 0.15f, -0.12f, 0.00f);
+    AddLabelStroke(laneCenters[0], labelZ, -0.12f, 0.00f, 0.12f, 0.00f);
+    AddLabelStroke(laneCenters[0], labelZ, 0.12f, 0.00f, 0.12f, -0.15f);
+    AddLabelStroke(laneCenters[0], labelZ, -0.12f, -0.15f, 0.12f, -0.15f);
+
+    // D
+    AddLabelStroke(laneCenters[1], labelZ, -0.12f, 0.15f, -0.12f, -0.15f);
+    AddLabelStroke(laneCenters[1], labelZ, -0.12f, 0.15f, 0.05f, 0.15f);
+    AddLabelStroke(laneCenters[1], labelZ, 0.05f, 0.15f, 0.12f, 0.08f);
+    AddLabelStroke(laneCenters[1], labelZ, 0.12f, 0.08f, 0.12f, -0.08f);
+    AddLabelStroke(laneCenters[1], labelZ, 0.12f, -0.08f, 0.05f, -0.15f);
+    AddLabelStroke(laneCenters[1], labelZ, 0.05f, -0.15f, -0.12f, -0.15f);
+
+    // F
+    AddLabelStroke(laneCenters[2], labelZ, -0.12f, 0.15f, 0.12f, 0.15f);
+    AddLabelStroke(laneCenters[2], labelZ, -0.12f, 0.15f, -0.12f, -0.15f);
+    AddLabelStroke(laneCenters[2], labelZ, -0.12f, 0.00f, 0.09f, 0.00f);
+
+    // J
+    AddLabelStroke(laneCenters[3], labelZ, -0.12f, 0.15f, 0.12f, 0.15f);
+    AddLabelStroke(laneCenters[3], labelZ, 0.12f, 0.15f, 0.12f, -0.08f);
+    AddLabelStroke(laneCenters[3], labelZ, 0.12f, -0.08f, 0.05f, -0.15f);
+    AddLabelStroke(laneCenters[3], labelZ, 0.05f, -0.15f, -0.12f, -0.15f);
+
+    // K
+    AddLabelStroke(laneCenters[4], labelZ, -0.12f, 0.15f, -0.12f, -0.15f);
+    AddLabelStroke(laneCenters[4], labelZ, -0.12f, 0.00f, 0.12f, 0.15f);
+    AddLabelStroke(laneCenters[4], labelZ, -0.12f, 0.00f, 0.12f, -0.15f);
+
+    // L
+    AddLabelStroke(laneCenters[5], labelZ, -0.12f, 0.15f, -0.12f, -0.15f);
+    AddLabelStroke(laneCenters[5], labelZ, -0.12f, -0.15f, 0.12f, -0.15f);
+}
+
+// Creates the Direct3D buffers used to render the keyboard labels.
+bool CreateLaneLabelBuffers()
+{
+    // Generate the geometry for S, D, F, J, K, and L.
+    BuildLaneLabelGeometry();
+
+    // Store the total number of indices needed to draw the labels.
+    labelIndexCount =
+        static_cast<unsigned int>(labelIndices.size());
+
+    // Create the vertex buffer.
+    D3D11_BUFFER_DESC vertexBufferDesc = {};
+    vertexBufferDesc.ByteWidth =
+        static_cast<UINT>(labelVertices.size() * sizeof(Vertex));
+    vertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+    D3D11_SUBRESOURCE_DATA vertexData = {};
+    vertexData.pSysMem = labelVertices.data();
+
+    HRESULT result = device->CreateBuffer(
+        &vertexBufferDesc,
+        &vertexData,
+        &labelVertexBuffer);
+
+    if (FAILED(result))
+    {
+        return false;
+    }
+
+    // Create the index buffer.
+    D3D11_BUFFER_DESC indexBufferDesc = {};
+    indexBufferDesc.ByteWidth =
+        static_cast<UINT>(labelIndices.size() * sizeof(unsigned int));
+    indexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    indexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+
+    D3D11_SUBRESOURCE_DATA indexData = {};
+    indexData.pSysMem = labelIndices.data();
+
+    result = device->CreateBuffer(
+        &indexBufferDesc,
+        &indexData,
+        &labelIndexBuffer);
+
+    if (FAILED(result))
+    {
+        labelVertexBuffer->Release();
+        labelVertexBuffer = nullptr;
+        return false;
+    }
+
+    return true;
+}
+
+
 bool CreateObjectSettingsBuffer()
 {
     D3D11_BUFFER_DESC bufferDesc = {};
@@ -884,6 +1277,18 @@ void Cleanup()
     if (trackVertexBuffer) {
         trackVertexBuffer->Release();
         trackVertexBuffer = nullptr;
+    }
+    
+    // Release the keyboard label vertex buffer.
+    if (labelVertexBuffer) {
+        labelVertexBuffer->Release();
+        labelVertexBuffer = nullptr;
+    }
+
+    // Release the keyboard label index buffer.
+    if (labelIndexBuffer) {
+        labelIndexBuffer->Release();
+        labelIndexBuffer = nullptr;
     }
 
     // Releases the input layout.
@@ -1039,7 +1444,7 @@ void RenderFrame(HWND hwnd)
     deviceContext->PSSetConstantBuffers(
         0, 1, &objectSettingsBuffer);
 
-    // Handle the 15-second preparation countdown.
+    // Handle the 10-second preparation countdown.
     if (countdownActive)
     {
         // Calculate how many seconds have passed.
@@ -1048,7 +1453,8 @@ void RenderFrame(HWND hwnd)
 
         // Calculate the remaining countdown seconds.
         int remainingTime =
-            15 - static_cast<int>(elapsedTime);
+            static_cast<int>(PREPARATION_TIME) -
+            static_cast<int>(elapsedTime);
 
         // Update the countdown display when the number changes.
         if (remainingTime != lastCountdownDisplayed &&
@@ -1079,6 +1485,9 @@ void RenderFrame(HWND hwnd)
 
             // Music will start after the lead-in.
             musicStarted = false;
+            // Reset end-of-song tracking for the new song.
+            musicFinished = false;
+            finalMusicPosition = 0.0;
         }
     }
 
@@ -1116,8 +1525,34 @@ void RenderFrame(HWND hwnd)
             }
             else
             {
-                // Follow the actual music playback position.
-                musicTime = GetMusicPosition();
+                // Check whether the music has reached its end.
+                if (!musicFinished && IsMusicFinished())
+                {
+                    // Record that playback has finished.
+                    musicFinished = true;
+
+                    // Save the final playback position.
+                    finalMusicPosition = GetMusicPosition();
+
+                    // Record when the audio ended.
+                    musicFinishedTime = std::chrono::steady_clock::now();
+                }
+
+                // Continue advancing the note timeline after the audio ends.
+                if (musicFinished)
+                {
+                    double timeSinceMusicEnded =
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - musicFinishedTime
+                        ).count();
+
+                    musicTime = finalMusicPosition + timeSinceMusicEnded;
+                }
+                else
+                {
+                    // Follow the actual music playback position.
+                    musicTime = GetMusicPosition();
+                }
             }
 
             // Spawn notes when their scheduled travel time begins.
@@ -1220,16 +1655,33 @@ void RenderFrame(HWND hwnd)
                 }
             }
 
-             // Remove notes that have already been hit or missed
-            // and have traveled far enough down the track.
+            // Remove successfully hit notes immediately.
+            // Missed notes remain visible until they travel off-screen.
             for (int i = static_cast<int>(activeNotes.size()) - 1; i >= 0; --i)
             {
-                if ((activeNotes[i].hit || activeNotes[i].missed) &&
-                    activeNotes[i].positionZ < -1.5f)
+                if (activeNotes[i].hit ||
+                    (activeNotes[i].missed && activeNotes[i].positionZ < -1.5f))
                 {
                     // Remove this completed note from the active notes list.
                     activeNotes.erase(activeNotes.begin() + i);
                 }
+            }
+
+            // Check whether the song and all remaining notes have finished.
+            if (musicFinished &&
+                nextNoteToSpawn >= static_cast<int>(noteChart.size()) &&
+                activeNotes.empty())
+            {
+                // Stop the audio and finish gameplay.
+                StopMusic();
+
+                musicStarted = false;
+                leadInActive = false;
+                gamePaused = false;
+
+                // Switch to the results screen.
+                currentGameState = GameState::RESULTS;
+                ShowResults(hwnd);
             }
         }
 
@@ -1240,6 +1692,9 @@ void RenderFrame(HWND hwnd)
             ObjectSettings settings = {};
             settings.rotateObject = 1;
             settings.cubePositionZ = note.positionZ;
+
+            // Tell the pixel shader whether this note was missed.
+            settings.extraPadding[0] = note.missed ? 1.0f : 0.0f;
 
             // Calculate the horizontal position using the note's lane.
             settings.cubePositionX = -1.5f + (note.lane * 0.6f);
@@ -1314,30 +1769,70 @@ void RenderFrame(HWND hwnd)
         }
     }
 
-    // Prepare settings for drawing the track.
-    ObjectSettings settings = {};
-    settings.rotateObject = 0;
-    settings.cubePositionZ = 0.0f;
-    settings.cubePositionX = 0.0f;
-    settings.padding = 0.0f;
-    settings.cubeLength = 1.0f;
 
-    // Tell the shaders not to apply the cube's Y rotation.
-    deviceContext->UpdateSubresource(
-        objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
 
-    // Set the track vertex and index buffers.
-    deviceContext->IASetVertexBuffers(
-        0, 1, &trackVertexBuffer, &vertexStride, &vertexOffset);
+    // Do not draw the track or keyboard labels on the Results screen.
+    if (currentGameState != GameState::RESULTS)
+    {
+        // Prepare settings for drawing the track.
+        ObjectSettings settings = {};
+        settings.rotateObject = 0;
+        settings.cubePositionZ = 0.0f;
+        settings.cubePositionX = 0.0f;
+        settings.padding = 0.0f;
+        settings.cubeLength = 1.0f;
 
-    deviceContext->IASetIndexBuffer(
-        trackIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
+        // Send keyboard states to the track shader.
+        for (int i = 0; i < 4; i++)
+        {
+            settings.lanePressed[i] =
+                laneKeyDown[i] ? 1.0f : 0.0f;
+        }
 
-    // Draw the two triangles that form the track.
-    deviceContext->DrawIndexed(6, 0, 0);
+        // Send the final two lane states.
+        settings.lanePressedLastTwo[0] =
+            laneKeyDown[4] ? 1.0f : 0.0f;
 
-    // Display the completed frame.
-    swapChain->Present(1, 0);
+        settings.lanePressedLastTwo[1] =
+            laneKeyDown[5] ? 1.0f : 0.0f;
+
+        // Tell the shaders not to apply the cube's Y rotation.
+        deviceContext->UpdateSubresource(
+            objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
+
+        // Set the track vertex and index buffers.
+        deviceContext->IASetVertexBuffers(
+            0, 1, &trackVertexBuffer, &vertexStride, &vertexOffset);
+
+        deviceContext->IASetIndexBuffer(
+            trackIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
+
+        // Draw the two triangles that form the track.
+        deviceContext->DrawIndexed(6, 0, 0);
+
+        // Prepare the keyboard label rendering mode.
+        settings.rotateObject = 2;
+        settings.cubePositionX = 0.0f;
+        settings.cubePositionZ = 0.0f;
+        settings.padding = 0.0f;
+        settings.cubeLength = 1.0f;
+
+        // Update the shader settings for the keyboard labels.
+        deviceContext->UpdateSubresource(
+            objectSettingsBuffer, 0, nullptr, &settings, 0, 0);
+
+        // Draw the six keyboard labels.
+        deviceContext->IASetVertexBuffers(
+            0, 1, &labelVertexBuffer, &vertexStride, &vertexOffset);
+
+        deviceContext->IASetIndexBuffer(
+            labelIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
+
+        deviceContext->DrawIndexed(labelIndexCount, 0, 0);
+    }
+        // Display the completed frame.
+        swapChain->Present(1, 0);
+    
 }
 
 
@@ -1349,10 +1844,76 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
     case WM_COMMAND:
     {
+        // Handle the Replay button.
+        if (LOWORD(wParam) == REPLAY_BUTTON_ID)
+        {
+            // Stop any remaining audio playback.
+            StopMusic();
+
+            // Hide the Results screen.
+            ShowWindow(resultsTitleLabel, SW_HIDE);
+            ShowWindow(resultsScoreLabel, SW_HIDE);
+            ShowWindow(resultsAccuracyLabel, SW_HIDE);
+            ShowWindow(resultsComboLabel, SW_HIDE);
+            ShowWindow(resultsHitsLabel, SW_HIDE);
+            ShowWindow(resultsMissesLabel, SW_HIDE);
+            ShowWindow(resultsRankLabel, SW_HIDE);
+            ShowWindow(replayButton, SW_HIDE);
+            ShowWindow(songSelectButton, SW_HIDE);
+
+            // Restart the currently selected song.
+            SendMessage(
+                hwnd,
+                WM_COMMAND,
+                MAKEWPARAM(PLAY_BUTTON_ID, BN_CLICKED),
+                (LPARAM)playButton
+            );
+
+            return 0;
+        }
+
+        // Handle the Song Selection button.
+        if (LOWORD(wParam) == SONG_SELECT_BUTTON_ID)
+        {
+            // Hide the Results screen.
+            ShowWindow(resultsTitleLabel, SW_HIDE);
+            ShowWindow(resultsScoreLabel, SW_HIDE);
+            ShowWindow(resultsAccuracyLabel, SW_HIDE);
+            ShowWindow(resultsComboLabel, SW_HIDE);
+            ShowWindow(resultsHitsLabel, SW_HIDE);
+            ShowWindow(resultsMissesLabel, SW_HIDE);
+            ShowWindow(resultsRankLabel, SW_HIDE);
+            ShowWindow(replayButton, SW_HIDE);
+            ShowWindow(songSelectButton, SW_HIDE);
+
+            // Return to the song selection menu.
+            currentGameState = GameState::SONG_SELECT;
+
+            ShowWindow(songListBox, SW_SHOW);
+            ShowWindow(playButton, SW_SHOW);
+
+            SetWindowText(hwnd, L"CubeBeatz | Song Selection");
+
+            SetFocus(songListBox);
+
+            return 0;
+        }
+
         // Check whether the Play button was clicked.
         if (LOWORD(wParam) == PLAY_BUTTON_ID &&
             HIWORD(wParam) == BN_CLICKED)
         {
+            // Hide the Results screen before starting gameplay.
+            ShowWindow(resultsTitleLabel, SW_HIDE);
+            ShowWindow(resultsScoreLabel, SW_HIDE);
+            ShowWindow(resultsAccuracyLabel, SW_HIDE);
+            ShowWindow(resultsComboLabel, SW_HIDE);
+            ShowWindow(resultsHitsLabel, SW_HIDE);
+            ShowWindow(resultsMissesLabel, SW_HIDE);
+            ShowWindow(resultsRankLabel, SW_HIDE);
+            ShowWindow(replayButton, SW_HIDE);
+            ShowWindow(songSelectButton, SW_HIDE);
+
             // Get the song currently highlighted in the list.
             selectedSongIndex = static_cast<int>(
                 SendMessage(songListBox, LB_GETCURSEL, 0, 0)
@@ -1372,8 +1933,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
 
             // Get the selected song's full file path.
-            std::wstring musicFile =
-                availableSongs[selectedSongIndex].wstring();
+            std::wstring musicFile = availableSongs[selectedSongIndex].wstring();
 
             // Load the selected song.
             if (!LoadMusic(musicFile.c_str()))
@@ -1401,43 +1961,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return 0;
             }
 
-            // TEMPORARY TEST: Add a 2-second hold note.
-            Note testHoldNote;
-
-            testHoldNote.hitTime = 8.0;
-            testHoldNote.lane = 2;
-            testHoldNote.type = NoteType::HOLD;
-            testHoldNote.duration = 2.0;
-
-            // Remove automatically generated notes that would overlap
-            // with the temporary hold in the same lane.
-            noteChart.erase(
-                std::remove_if(
-                    noteChart.begin(),
-                    noteChart.end(),
-                    [](const Note& note)
-                    {
-                        return note.lane == 2 &&
-                            note.hitTime >= 8.0 &&
-                            note.hitTime <= 10.0;
-                    }
-                ),
-                noteChart.end()
-            );
-
-            // Add the test hold note to the chart.
-            noteChart.push_back(testHoldNote);
-
-            // Keep all notes in chronological order.
-            std::sort(
-                noteChart.begin(),
-                noteChart.end(),
-                [](const Note& a, const Note& b)
-                {
-                    return a.hitTime < b.hitTime;
-                }
-            );
-
             // Reset gameplay information for the new song.
             activeNotes.clear();
             nextNoteToSpawn = 0;
@@ -1454,12 +1977,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 laneKeyDown[i] = false;
             }
 
-            // Begin the 15-second preparation countdown.
+            // Begin the 10-second preparation countdown.
             countdownStartTime = GetTickCount64() / 1000.0;
             countdownActive = true;
 
             // Music has not started yet.
             musicStarted = false;
+
+            // Reset end-of-song tracking.
+            musicFinished = false;
+            finalMusicPosition = 0.0;
 
             // The visual lead-in has not started yet.
             leadInActive = false;
@@ -1473,6 +2000,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             // Hide the song selection controls.
             ShowWindow(songListBox, SW_HIDE);
             ShowWindow(playButton, SW_HIDE);
+            // Return keyboard focus to the main game window.
+            SetFocus(hwnd);
 
             // Reset the HUD values for the new song.
             SetWindowText(scoreLabel, L"Score: 0");
@@ -1510,8 +2039,33 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             {
                 if (!gamePaused)
                 {
+                    // Check whether the player is currently holding a note.
+                    bool holdingNote = false;
+
+                    for (const auto& note : activeNotes)
+                    {
+                        if (note.holding)
+                        {
+                            holdingNote = true;
+                            break;
+                        }
+                    }
+
+                    // Do not pause in the middle of a hold note.
+                    if (holdingNote)
+                    {
+                        SetWindowText(judgmentLabel,
+                            L"FINISH THE HOLD FIRST!");
+
+                        ShowWindow(judgmentLabel, SW_SHOW);
+
+                        return 0;
+                    }
+
                     // Pause the game.
                     gamePaused = true;
+                    // Show the pause indicator.
+                    ShowWindow(pauseLabel, SW_SHOW);
                     pauseStartTime = std::chrono::steady_clock::now();
 
                     if (musicStarted)
@@ -1540,6 +2094,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                     }
 
                     gamePaused = false;
+
+                    // Hide the pause indicator when gameplay resumes.
+                    ShowWindow(pauseLabel, SW_HIDE);
 
                     SetWindowText(hwnd, L"CubeBeatz - Playing");
                 }
@@ -1632,7 +2189,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 // Tap notes are completed immediately.
                 note.hit = true;
 
-                if (std::abs(note.positionZ) <= 0.15f)
+                if (std::fabs(note.positionZ - NOTE_HIT_Z) <= 0.12f)
                 {
                     RegisterSuccessfulHit(hwnd, 500, L"PERFECT!");
                 }
@@ -1647,53 +2204,106 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
-    case WM_KEYUP:
-    {
-        int releasedLane = -1;
+   case WM_KEYUP:
+   {
+       int releasedLane = -1;
 
-        // Identify which lane key was released.
-        switch (wParam)
-        {
-        case 'S': releasedLane = 0; break;
-        case 'D': releasedLane = 1; break;
-        case 'F': releasedLane = 2; break;
-        case 'J': releasedLane = 3; break;
-        case 'K': releasedLane = 4; break;
-        case 'L': releasedLane = 5; break;
-        }
+       // Identify which lane key was released.
+       switch (wParam)
+       {
+       case 'S': releasedLane = 0; break;
+       case 'D': releasedLane = 1; break;
+       case 'F': releasedLane = 2; break;
+       case 'J': releasedLane = 3; break;
+       case 'K': releasedLane = 4; break;
+       case 'L': releasedLane = 5; break;
+       }
 
-        // Ignore keys that aren't part of the six lanes.
-        if (releasedLane == -1)
-            return 0;
+       // Ignore keys that aren't part of the six lanes.
+       if (releasedLane == -1)
+           return 0;
 
-        // Mark the lane key as released.
-        laneKeyDown[releasedLane] = false;
+       // Mark the lane key as released.
+       laneKeyDown[releasedLane] = false;
 
-        // Check whether this key was being used to hold a note.
-        for (auto& note : activeNotes)
-        {
-            if (!note.holding || note.lane != releasedLane)
-                continue;
+       // Check whether this key was being used to hold a note.
+       for (auto& note : activeNotes)
+       {
+           if (!note.holding || note.lane != releasedLane)
+               continue;
 
-            // Releasing before the hold duration ends causes a miss.
-            note.holding = false;
-            note.missed = true;
+           // Determine when the hold note should finish.
+           double holdEndTime = note.hitTime + note.duration;
 
-            missCount++;
-            combo = 0;
-            multiplier = 1;
 
-            SetWindowText(missLabel, L"MISS!");
-            ShowWindow(missLabel, SW_SHOW);
+           // Use the same timeline as RenderFrame(), including after audio ends.
+           double musicTime = GetMusicPosition();
 
-            SetWindowText(comboLabel, L"Combo: 0");
-            SetWindowText(hwnd, L"CubeBeatz - Miss!");
+           if (musicFinished)
+           {
+               double timeSinceMusicEnded =
+                   std::chrono::duration<double>(
+                       std::chrono::steady_clock::now() - musicFinishedTime
+                   ).count();
 
-            break;
-        }
+               musicTime = finalMusicPosition + timeSinceMusicEnded;
+           }
 
-        return 0;
-    }
+           // Releasing at or after the end time counts as successful.
+           if (musicTime >= holdEndTime)
+           {
+               note.holding = false;
+               note.hit = true;
+
+               // Calculate the hold's base score using its duration.
+               int holdPoints = 500 +
+                   static_cast<int>(std::lround(note.duration * 250.0));
+
+               // Award points and increase the combo.
+               RegisterSuccessfulHit(
+                   hwnd,
+                   holdPoints,
+                   L"HOLD COMPLETE!"
+               );
+           }
+           else
+           {
+               // Releasing before the end time causes a miss.
+               note.holding = false;
+               note.missed = true;
+
+               missCount++;
+               combo = 0;
+               multiplier = 1;
+
+               // Update the miss counter.
+               wchar_t missText[50];
+               wsprintf(missText, L"Misses: %d", missCount);
+               SetWindowText(missLabel, missText);
+
+               // Update the combo display.
+               SetWindowText(comboLabel, L"Combo: 0");
+
+               // Display the miss judgment.
+               SetWindowText(judgmentLabel, L"HOLD MISS!");
+               ShowWindow(judgmentLabel, SW_SHOW);
+
+               // Update the window title.
+               wchar_t title[150];
+               wsprintf(
+                   title,
+                   L"CubeBeatz - Score: %d | Combo: %d | Misses: %d",
+                   score, combo, missCount
+               );
+
+               SetWindowText(hwnd, title);
+           }
+
+           break;
+       }
+
+       return 0;
+   }
 
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -1804,6 +2414,19 @@ int WINAPI WinMain(
         return 1;
     }
 
+    if (!CreateLaneLabelBuffers())
+    {
+        MessageBox(
+            hwnd,
+            L"Failed to create lane label buffers.",
+            L"CubeBeatz Error",
+            MB_OK | MB_ICONERROR);
+
+        Cleanup();
+        DestroyWindow(hwnd);
+        return 1;
+    }
+
     // Creates the constant buffer used to send object settings to the GPU.
     if (!CreateObjectSettingsBuffer())
     {
@@ -1859,8 +2482,16 @@ int WINAPI WinMain(
     // Create the gameplay HUD.
     CreateHUD(hwnd);
 
+    // Create the Results screen.
+    CreateResultsScreen(hwnd);
+
+    ShowWindow(pauseLabel, SW_HIDE);
+
     // Display the application window.
     ShowWindow(hwnd, nCmdShow);
+
+    // Give the song list keyboard focus.
+    SetFocus(songListBox);
 
     //stores message recieved from windows
     MSG msg = {};

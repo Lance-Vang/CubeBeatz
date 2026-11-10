@@ -27,5 +27,8 @@ void StopMusic();
 // Returns the current playback position in seconds.
 double GetMusicPosition();
 
+// Checks whether the music has finished playing.
+bool IsMusicFinished();
+
 // Releases audio resources.
 void CleanupAudio();

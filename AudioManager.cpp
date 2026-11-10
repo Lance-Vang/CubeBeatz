@@ -71,6 +71,10 @@ bool LoadMusic(const wchar_t* filename)
     }
 
     musicLoaded = true;
+
+    // Reset the saved pause position for the new song.
+    pausedPosition = 0;
+
     return true;
 }
 
@@ -145,6 +149,15 @@ double GetMusicPosition()
         return 0.0;
 
     return static_cast<double>(framePosition) / sampleRate;
+}
+
+// Checks whether the music has finished playing.
+bool IsMusicFinished()
+{
+    if (!musicLoaded)
+        return false;
+
+    return ma_sound_at_end(&musicSound);
 }
 
 // Releases audio resources.

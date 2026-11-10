@@ -8,12 +8,17 @@ cbuffer ObjectSettings : register(b0)
 
     float cubeLength;
     float3 extraPadding;
+
+    float4 lanePressed;
+    float2 lanePressedLastTwo;
+    float2 extraPadding2;
 };
 
 struct VertexOutput
 {
     float4 position : SV_POSITION;
     float3 localPosition : COLOR;
+    float3 viewPosition : TEXCOORD0;
 };
 
 VertexOutput main(float4 pos : POSITION)
@@ -72,14 +77,17 @@ VertexOutput main(float4 pos : POSITION)
 
     y = rotatedY;
     z = rotatedZ;
-
+    
     // Move the objects in front of the camera.
     z += 3.0f;
+
+    // Pass the 3D position to the pixel shader for lighting.
+    output.viewPosition = float3(x, y, z);
 
     // Perspective projection.
     float nearPlane = 0.1f;
     float farPlane = 100.0f;
-    float focalLength = 1.5f;
+    float focalLength = 1.7f;
 
     float projectedZ =
         (z * farPlane / (farPlane - nearPlane))
