@@ -141,7 +141,7 @@ float4 main(PixelInput input) : SV_TARGET
         if (pressed > 0.5f)
         {
             trackColor.rgb =
-                saturate(trackColor.rgb + laneColor * 0.65f);
+                saturate(trackColor.rgb + laneColor * 0.75f);
         }
 
         return trackColor;

@@ -302,6 +302,9 @@ int selectedSongIndex = 0;
 HWND songListBox = nullptr;
 HWND playButton = nullptr;
 
+// Stores the original Windows procedure for the song list.
+WNDPROC originalSongListProc = nullptr;
+
 // Displays the preparation countdown before the song begins.
 HWND countdownLabel = nullptr;
 
@@ -495,6 +498,38 @@ bool InitializeDirect3D(HWND hwnd) {
 
 }
 
+// Handles additional keyboard input for the song selection list.
+LRESULT CALLBACK SongListProc(
+    HWND hwnd,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam)
+{
+    // Allow Enter to start the currently selected song.
+    if (uMsg == WM_KEYDOWN && wParam == VK_RETURN)
+    {
+        HWND parentWindow = GetParent(hwnd);
+
+        SendMessage(
+            parentWindow,
+            WM_COMMAND,
+            MAKEWPARAM(PLAY_BUTTON_ID, BN_CLICKED),
+            reinterpret_cast<LPARAM>(playButton)
+        );
+
+        return 0;
+    }
+
+    // Pass all other messages to the original Windows list procedure.
+    return CallWindowProc(
+        originalSongListProc,
+        hwnd,
+        uMsg,
+        wParam,
+        lParam
+    );
+}
+
 // Creates the song selection menu inside the game window.
 void CreateSongSelectionMenu(HWND hwnd)
 {
@@ -507,7 +542,7 @@ void CreateSongSelectionMenu(HWND hwnd)
         WS_TABSTOP | LBS_NOTIFY | WS_VSCROLL,
         400, 200, 450, 250,
         hwnd,
-        (HMENU)SONG_LIST_ID,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(SONG_LIST_ID)),
         GetModuleHandle(nullptr),
         nullptr
     );
@@ -523,6 +558,15 @@ void CreateSongSelectionMenu(HWND hwnd)
         );
         return;
     }
+
+    // Replace the list box procedure so Enter can start the selected song.
+    originalSongListProc = reinterpret_cast<WNDPROC>(
+    SetWindowLongPtr(
+        songListBox,
+        GWLP_WNDPROC,
+        reinterpret_cast<LONG_PTR>(SongListProc)
+    )
+);
 
     // Add every discovered song to the list.
     for (const auto& song : availableSongs)
@@ -549,7 +593,7 @@ void CreateSongSelectionMenu(HWND hwnd)
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         550, 480, 150, 45,
         hwnd,
-        (HMENU)PLAY_BUTTON_ID,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(PLAY_BUTTON_ID)),
         GetModuleHandle(nullptr),
         nullptr
     );
@@ -718,7 +762,7 @@ void CreateResultsScreen(HWND hwnd)
         WS_CHILD | BS_PUSHBUTTON,
         430, 490, 180, 50,
         hwnd,
-        (HMENU)REPLAY_BUTTON_ID,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(REPLAY_BUTTON_ID)),
         GetModuleHandle(nullptr), nullptr
     );
 
@@ -728,7 +772,7 @@ void CreateResultsScreen(HWND hwnd)
         WS_CHILD | BS_PUSHBUTTON,
         630, 490, 180, 50,
         hwnd,
-        (HMENU)SONG_SELECT_BUTTON_ID,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(SONG_SELECT_BUTTON_ID)),
         GetModuleHandle(nullptr), nullptr
     );
 }
@@ -811,25 +855,29 @@ void ShowResults(HWND hwnd)
 
 
 
+
 // Opens a Windows file picker so the player can select a song.
 bool SelectMusicFile(std::wstring& selectedFile)
 {
-    // Stores the selected file path.
-    wchar_t filePath[32768] = {};
+    // Allocate the file path buffer on the heap instead of the stack.
+    std::vector<wchar_t> filePath(32768, L'\0');
 
     // Configure the Windows file selection dialog.
     OPENFILENAMEW dialog = {};
     dialog.lStructSize = sizeof(dialog);
     dialog.hwndOwner = nullptr;
+
     dialog.lpstrFilter =
         L"Audio Files (*.mp3;*.wav)\0*.mp3;*.wav\0"
         L"MP3 Files (*.mp3)\0*.mp3\0"
         L"WAV Files (*.wav)\0*.wav\0"
         L"All Files (*.*)\0*.*\0";
 
-    dialog.lpstrFile = filePath;
-    dialog.nMaxFile = static_cast<DWORD>(sizeof(filePath) / sizeof(filePath[0]));
+    // Connect the file picker to our buffer.
+    dialog.lpstrFile = filePath.data();
+    dialog.nMaxFile = static_cast<DWORD>(filePath.size());
     dialog.lpstrTitle = L"Select a Song for CubeBeatz";
+
     dialog.Flags =
         OFN_FILEMUSTEXIST |
         OFN_PATHMUSTEXIST |
@@ -838,13 +886,14 @@ bool SelectMusicFile(std::wstring& selectedFile)
     // Display the file picker.
     if (GetOpenFileNameW(&dialog))
     {
-        selectedFile = filePath;
+        selectedFile = filePath.data();
         return true;
     }
 
     // The player did not select a file.
     return false;
 }
+
 
 bool CompileShader(const wchar_t* filename, const char* entryPoint, const char* shaderModel, ID3DBlob** shaderblob) {
 	ID3DBlob* errorBlob = nullptr;
@@ -1250,6 +1299,12 @@ bool CreateInputLayout() {
 // Cleans up Direct3D resources and compiled shader bytecode.
 void Cleanup()
 {
+    // Clear resources still bound to the Direct3D context.
+    if (deviceContext)
+    {
+        deviceContext->ClearState();
+    }
+
     // Release the object settings constant buffer.
     if (objectSettingsBuffer)
     {
@@ -1866,7 +1921,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 hwnd,
                 WM_COMMAND,
                 MAKEWPARAM(PLAY_BUTTON_ID, BN_CLICKED),
-                (LPARAM)playButton
+                reinterpret_cast<LPARAM>(playButton)
             );
 
             return 0;
