@@ -196,10 +196,7 @@ else
     laneColor = float3(0.15f, 1.0f, 0.30f); // Green
 
 // Apply Phong lighting to the note cube.
-float3 litColor = CalculatePhongLighting(
-    input.viewPosition,
-    laneColor
-);
+float3 litColor = CalculatePhongLighting(input.viewPosition, laneColor); 
 
 return float4(litColor, 1.0f);
 }

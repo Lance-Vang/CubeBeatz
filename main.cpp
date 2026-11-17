@@ -1,8 +1,9 @@
-/* Authors:
-* Course:
-* Date:
+/* Authors:Lance Vang & Angadpaul Deol
+* Course: COMP 157 Computer Graphics
+* Date: 11/16/2026
 * 
 * Project Name: CubeBeatz
+* A rhythm game where players hit notes in time with music.Made using C++ and Direct3D 11.
 */
 
 #include <windows.h> //Windows function and Windows management
